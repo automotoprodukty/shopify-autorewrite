@@ -168,6 +168,17 @@ async function waitForProduct(id, attempts = 5, delayMs = 1200) {
   return null;
 }
 
+async function productOptionsUpdate(productId, productOptions) {
+  return gql(`
+    mutation($productId: ID!, $productOptions: [ProductOptionInput!]!) {
+      productOptionsUpdate(productId: $productId, productOptions: $productOptions) {
+        product { id options { name position } }
+        userErrors { field message }
+      }
+    }
+  `, { productId, productOptions });
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -230,13 +241,18 @@ CIEĽ: Vráť JSON s kľúčmi:
         position: o.position ?? i + 1
       }));
 
+    // 2a) základné polia bez options
     await productUpdate({
       id: p.id,
       title: out.title,
       descriptionHtml: out.description,
-      tags,
-      options: optionNames.length ? optionNames : undefined
+      tags
     });
+
+    // 2b) názvy možností samostatne
+    if (optionNames.length) {
+      await productOptionsUpdate(p.id, optionNames);
+    }
 
     // --- 2) Ak prišli nové values, premapuj varianty podľa indexu
     const newValuesByPos = new Map();
