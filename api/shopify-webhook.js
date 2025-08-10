@@ -101,6 +101,47 @@ async function openAIRewrite(payloadText) {
   return JSON.parse(clean);
 }
 
+// --- Enforce exact description formatting (blank lines & headings)
+function formatDescription(desc) {
+  if (!desc) return "";
+  let s = String(desc).replace(/\r\n/g, "\n").trim();
+
+  // Ensure strong headings exist (wrap plain headings if needed)
+  s = s.replace(/(^|\n)\s*🚗\s*Výhody:\s*/g, "\n\n<strong>🚗 Výhody:</strong>\n");
+  s = s.replace(/(^|\n)\s*📦\s*Špecifikácia:\s*/g, "\n\n<strong>📦 Špecifikácia:</strong>\n");
+  s = s.replace(/(^|\n)\s*🎯\s*Pre koho je určený:\s*/g, "\n\n<strong>🎯 Pre koho je určený:</strong>\n");
+
+  // If headings already have <strong>, normalize spacing around them
+  s = s.replace(/\s*<strong>🚗\s*Výhody:\s*<\/strong>\s*/g, "\n\n<strong>🚗 Výhody:</strong>\n");
+  s = s.replace(/\s*<strong>📦\s*Špecifikácia:\s*<\/strong>\s*/g, "\n\n<strong>📦 Špecifikácia:</strong>\n");
+  s = s.replace(/\s*<strong>🎯\s*Pre koho je určený:\s*<\/strong>\s*/g, "\n\n<strong>🎯 Pre koho je určený:</strong>\n");
+
+  // After headings: no blank line allowed (already ensured by the trailing \n above)
+
+  // Make sure list items start on a new line
+  // Convert inline "✅" and "•" into line-start items
+  s = s
+    // collapse multiple spaces
+    .replace(/[ \t]+/g, " ")
+    // ensure each '✅ ' starts on a new line (but not duplicate newlines)
+    .replace(/(?:\s+)?✅\s*/g, "\n✅ ")
+    // ensure each '• ' starts on a new line
+    .replace(/(?:\s+)?•\s*/g, "\n• ");
+
+  // Remove accidental extra blank lines except those we want between sections
+  s = s.replace(/\n{3,}/g, "\n\n");
+
+  // Ensure there is a blank line before each heading (already enforced), and exactly one blank line between sections
+  s = s
+    .replace(/\n+\s*<strong>🚗 Výhody:<\/strong>\n/g, "\n\n<strong>🚗 Výhody:</strong>\n")
+    .replace(/\n+\s*<strong>📦 Špecifikácia:<\/strong>\n/g, "\n\n<strong>📦 Špecifikácia:</strong>\n")
+    .replace(/\n+\s*<strong>🎯 Pre koho je určený:<\/strong>\n/g, "\n\n<strong>🎯 Pre koho je určený:</strong>\n");
+
+  // Trim leading/trailing newlines
+  s = s.replace(/^\n+|\n+$/g, "");
+  return s;
+}
+
 async function productUpdate(input) {
   return gql(
     `
@@ -312,7 +353,7 @@ CIEĽ: Vráť JSON s kľúčmi:
     await productUpdate({
       id: p.id,
       title: out.title,
-      descriptionHtml: out.description,
+      descriptionHtml: formatDescription(out.description),
       tags
     });
 
