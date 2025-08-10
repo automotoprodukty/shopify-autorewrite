@@ -153,6 +153,21 @@ async function metafieldsSet(ownerId) {
   );
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function waitForProduct(id, attempts = 5, delayMs = 1200) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const data = await getProduct(id);
+      if (data?.product) return data.product;
+    } catch (e) {
+      // ignorujeme, skúsime znova
+    }
+    await sleep(delayMs);
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -169,13 +184,16 @@ export default async function handler(req, res) {
     const productGid = `gid://shopify/Product/${body.id}`;
 
     // --- Stiahni produkt
-    const pData = await getProduct(productGid);
-    const p = pData.product;
+const p = await waitForProduct(productGid);
+if (!p) {
+  console.error("Product not ready from GraphQL after retries:", productGid);
+  return res.status(202).send("Product not ready yet");
+}
 
-    // Anti-loop: ak už je processed=true, končíme
-    const processed = p.metafields?.edges?.some(
-      (e) => e.node.key === "processed" && e.node.value === "true"
-    );
+// Anti-loop (s bezpečným ?.)
+const processed = p.metafields?.edges?.some(
+  (e) => e.node.key === "processed" && e.node.value === "true"
+);
     if (processed) return res.status(200).send("Already processed");
 
     // --- Priprav prompt pre OpenAI
