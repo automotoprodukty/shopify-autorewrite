@@ -289,6 +289,84 @@ async function restUpdateVariantOptions(variantGid, option1, option2, option3) {
   return r.json();
 }
 
+// ---- Normalization helper (case/diacritics/spacing insensitive compare)
+function normalizeForMatch(raw) {
+  if (!raw) return "";
+  return String(raw)
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    // remove accents/diacritics
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    // unifying dashes
+    .replace(/[‐‑–—]/g, "-");
+}
+
+// ---- Collections helpers (REST)
+async function restFindCustomCollectionByTitle(title) {
+  const want = normalizeForMatch(title);
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json?limit=250`;
+  const r = await fetch(url, {
+    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
+  });
+  if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  const list = Array.isArray(j.custom_collections) ? j.custom_collections : [];
+  // try exact normalized match first
+  let found = list.find(c => normalizeForMatch(c.title) === want);
+  if (found) return found;
+  // fallback: startsWith (useful when kolekcie majú prefix/sufix)
+  found = list.find(c => normalizeForMatch(c.title).startsWith(want));
+  return found || null;
+}
+
+async function restCreateCustomCollection(title) {
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ custom_collection: { title } })
+  });
+  if (!r.ok) throw new Error(`REST create custom_collection failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  return j.custom_collection;
+}
+
+async function restEnsureCustomCollection(title) {
+  let c = await restFindCustomCollectionByTitle(title);
+  if (c) return c;
+  return await restCreateCustomCollection(title);
+}
+
+async function restCollectExists(productId, collectionId) {
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json?product_id=${productId}&collection_id=${collectionId}&limit=1`;
+  const r = await fetch(url, {
+    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
+  });
+  if (!r.ok) throw new Error(`REST get collects failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  return (j.collects?.length || 0) > 0;
+}
+
+async function restCreateCollect(productId, collectionId) {
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ collect: { product_id: productId, collection_id: collectionId } })
+  });
+  if (!r.ok) throw new Error(`REST create collect failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  return j.collect;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -419,7 +497,30 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) (voliteľné) kolekcie – odporúčam riešiť cez automatické kolekcie na základe tagov
+    // --- 3) Collections (attach only to EXISTING custom collections) ---
+    // out.collections: názvy kolekcií podľa pravidiel. Smart collections sa riešia tagmi.
+    if (Array.isArray(out.collections) && out.collections.length) {
+      const productNumericId = body.id; // z webhook payloadu (numeric)
+      for (const colTitle of out.collections) {
+        const title = String(colTitle).trim();
+        if (!title) continue;
+        try {
+          // nájdeme iba existujúcu Custom collection; ak neexistuje, preskočíme
+          const coll = await restFindCustomCollectionByTitle(title);
+          if (!coll) {
+            console.warn("Collection not found, skipping (no create):", title);
+            continue;
+          }
+          const exists = await restCollectExists(productNumericId, coll.id);
+          if (!exists) {
+            await restCreateCollect(productNumericId, coll.id);
+          }
+        } catch (err) {
+          console.error("Collection attach error:", title, err?.message || err);
+          // pokračujeme na ďalšie kolekcie
+        }
+      }
+    }
 
     // --- 4) anti-loop
     await metafieldsSet(p.id);
