@@ -139,6 +139,8 @@ function formatDescription(desc) {
 
   // Trim leading/trailing newlines
   s = s.replace(/^\n+|\n+$/g, "");
+  // Convert newlines to explicit HTML breaks so Shopify renders the layout
+  s = s.replace(/\n/g, "<br>");
   return s;
 }
 
@@ -196,7 +198,7 @@ async function metafieldsSet(ownerId) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function waitForProduct(id, attempts = 5, delayMs = 1200) {
+async function waitForProduct(id, attempts = 12, delayMs = 1500) {
   for (let i = 0; i < attempts; i++) {
     try {
       const data = await getProduct(id);
