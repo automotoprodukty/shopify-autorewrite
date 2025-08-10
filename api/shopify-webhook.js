@@ -222,7 +222,7 @@ function gidToNumeric(gid) {
 
 async function restUpdateVariantOptions(variantGid, option1, option2, option3) {
   const variantId = gidToNumeric(variantGid);
-  const payload = { variant: { id: Number(variantId) } };
+  const payload = { variant: { id: variantId } };
   if (typeof option1 !== "undefined") payload.variant.option1 = option1;
   if (typeof option2 !== "undefined") payload.variant.option2 = option2;
   if (typeof option3 !== "undefined") payload.variant.option3 = option3;
