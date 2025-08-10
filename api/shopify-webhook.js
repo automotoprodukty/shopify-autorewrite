@@ -62,25 +62,22 @@ async function getProduct(productGid) {
 }
 
 async function openAIRewrite(payloadText) {
+  // Použijeme Chat Completions – stabilný tvar odpovede
   const body = {
     model: "gpt-4o-mini",
     temperature: 0.2,
-    // nech vráti priamo JSON objekt
     response_format: { type: "json_object" },
-    input: [
+    messages: [
       {
         role: "system",
         content:
-          "Si asistent pre úpravu Shopify produktov. Dodrž: (1) krátky názov bez emoji, prídavné meno po pomlčke; (2) popis so štruktúrou Úvod/🚗 Výhody (✅)/📦 Špecifikácia (•)/🎯 Pre koho (•); (3) tagy: základné+subtagy+extra; (4) options: premenovať names; ak dodané values, sú to kompletné nové zoznamy; (5) nič nevymýšľaj mimo vstupu."
+          "Si asistent pre úpravu Shopify produktov. Dodrž: (1) krátky názov bez emoji, prídavné meno po pomlčke; (2) popis so štruktúrou Úvod/🚗 Výhody (✅)/📦 Špecifikácia (•)/🎯 Pre koho (•); (3) tagy: základné+subtagy+extra; (4) options: premenovať names; ak dodané values, sú to kompletné nové zoznamy; (5) nič nevymýšľaj mimo vstupu. Vráť len čistý JSON."
       },
-      {
-        role: "user",
-        content: payloadText
-      }
+      { role: "user", content: payloadText }
     ]
   };
 
-  const r = await fetch("https://api.openai.com/v1/responses", {
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -90,15 +87,18 @@ async function openAIRewrite(payloadText) {
   });
 
   const j = await r.json();
-  // V nových odpovediach je text najčastejšie v output[0].content[0].text
-  const text =
-    j.output?.[0]?.content?.[0]?.text ??
-    j.choices?.[0]?.message?.content ??
+
+  // Očakávaný tvar: j.choices[0].message.content (string s JSONom)
+  const content =
+    j?.choices?.[0]?.message?.content ??
     (() => {
-      throw new Error("OpenAI: no content");
+      throw new Error("OpenAI: no content in chat completion");
     })();
 
-  return JSON.parse(text);
+  // Pre istotu odstránime prípadné trojité backticky
+  const clean = content.trim().replace(/^```(?:json)?\n?/i, "").replace(/```$/, "");
+
+  return JSON.parse(clean);
 }
 
 async function productUpdate(input) {
