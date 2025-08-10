@@ -179,6 +179,40 @@ async function productOptionsUpdate(productId, productOptions) {
   `, { productId, productOptions });
 }
 
+async function restUpdateProductOptions(numericProductId, optionNames, existingOptions) {
+  const payloadOptions = optionNames.map((o) => {
+    const matched = existingOptions.find((e) => (e.position ?? 0) === (o.position ?? 0));
+    return {
+      id: matched?.id,
+      name: o.name,
+      position: o.position
+    };
+  });
+
+  const r = await fetch(
+    `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/products/${numericProductId}.json`,
+    {
+      method: "PUT",
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        product: {
+          id: numericProductId,
+          options: payloadOptions
+        }
+      })
+    }
+  );
+
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`REST options update failed: ${r.status} ${t}`);
+  }
+  return r.json();
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -249,9 +283,9 @@ CIEĽ: Vráť JSON s kľúčmi:
       tags
     });
 
-    // 2b) názvy možností samostatne
+    // 2b) názvy možností samostatne – REST verzia
     if (optionNames.length) {
-      await productOptionsUpdate(p.id, optionNames);
+      await restUpdateProductOptions(body.id, optionNames, p.options);
     }
 
     // --- 2) Ak prišli nové values, premapuj varianty podľa indexu
