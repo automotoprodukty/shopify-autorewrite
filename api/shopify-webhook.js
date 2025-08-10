@@ -213,6 +213,39 @@ async function restUpdateProductOptions(numericProductId, optionNames, existingO
   return r.json();
 }
 
+function gidToNumeric(gid) {
+  // e.g. gid://shopify/ProductVariant/56073641656694 -> 56073641656694
+  if (!gid) return null;
+  const parts = String(gid).split("/");
+  return parts[parts.length - 1];
+}
+
+async function restUpdateVariantOptions(variantGid, option1, option2, option3) {
+  const variantId = gidToNumeric(variantGid);
+  const payload = { variant: { id: Number(variantId) } };
+  if (typeof option1 !== "undefined") payload.variant.option1 = option1;
+  if (typeof option2 !== "undefined") payload.variant.option2 = option2;
+  if (typeof option3 !== "undefined") payload.variant.option3 = option3;
+
+  const r = await fetch(
+    `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/variants/${variantId}.json`,
+    {
+      method: "PUT",
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`REST variant update failed: ${r.status} ${t}`);
+  }
+  return r.json();
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -297,28 +330,38 @@ CIEĽ: Vráť JSON s kľúčmi:
       }
     });
 
-    if (newValuesByPos.size > 0) {
       // Pomocné mapy: názov optiony -> {idx, values}
       const byName = Object.fromEntries(
         p.options.map((opt, idx) => [opt.name, { idx, values: opt.values }])
       );
+      const posByName = Object.fromEntries(p.options.map((opt, idx) => [opt.name, idx + 1])); // 1-based
 
-      const bulk = p.variants.edges.map(({ node }) => {
-        // pre každý selectedOption pozri, či máme novú sadu pre danú pozíciu
-        const newOptions = node.selectedOptions.map((so) => {
-          const pos = (byName[so.name]?.idx ?? 0) + 1; // 1-based
+      // Pre každý variant vypočítaj nové option1/2/3 a aktualizuj cez REST
+      for (const { node } of p.variants.edges) {
+        let newOpt1, newOpt2, newOpt3;
+
+        for (const so of node.selectedOptions) {
+          const pos = (posByName[so.name] || 0);
+          const oldValues = byName[so.name]?.values || [];
           const newList = newValuesByPos.get(pos);
-          if (!newList) return so.value;
 
-          const oldIndex = byName[so.name].values.indexOf(so.value);
-          return newList[oldIndex] ?? so.value;
-        });
+          // Ak nemáme nový zoznam pre danú pozíciu, ponechaj pôvodnú hodnotu
+          let newVal = so.value;
+          if (newList && Array.isArray(newList)) {
+            const oldIndex = oldValues.indexOf(so.value);
+            if (oldIndex >= 0 && typeof newList[oldIndex] !== "undefined") {
+              newVal = newList[oldIndex];
+            }
+          }
 
-        return { id: node.id, options: newOptions };
-      });
+          if (pos === 1) newOpt1 = newVal;
+          if (pos === 2) newOpt2 = newVal;
+          if (pos === 3) newOpt3 = newVal;
+        }
 
-      await variantsBulkUpdate(p.id, bulk);
-    }
+        // Aktualizuj variant cez REST
+        await restUpdateVariantOptions(node.id, newOpt1, newOpt2, newOpt3);
+      }
 
     // --- 3) (voliteľné) kolekcie – odporúčam riešiť cez automatické kolekcie na základe tagov
 
