@@ -7,6 +7,100 @@
 // 6) Zapíše metafield automation.processed=true
 
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+// --- Load taxonomy.json at startup and keep in memory
+let taxonomia = null;
+function loadTaxonomia() {
+  if (taxonomia) return taxonomia;
+  const file = path.join(process.cwd(), "taxonomia.json");
+  try {
+    const data = fs.readFileSync(file, "utf8");
+    taxonomia = JSON.parse(data);
+  } catch (e) {
+    console.error("Failed to load taxonomia.json:", e);
+    taxonomia = null;
+  }
+  return taxonomia;
+}
+
+// --- Helper: Given leaf collection name, find full branch (ancestor names up to root) in taxonomy
+function getTaxonomyBranchFromLeaf(leafName) {
+  const tax = loadTaxonomia();
+  if (!tax) return [];
+  // Find leaf node by name (case-insensitive, diacritics-insensitive)
+  function normalize(s) {
+    return String(s || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[‐‑–—]/g, "-");
+  }
+  let foundPath = [];
+  function search(node, path) {
+    if (!node) return false;
+    if (normalize(node.name) === normalize(leafName)) {
+      foundPath = [...path, node];
+      return true;
+    }
+    if (Array.isArray(node.children)) {
+      for (const ch of node.children) {
+        if (search(ch, [...path, node])) return true;
+      }
+    }
+    return false;
+  }
+  // Taxonomy can be an array or object
+  if (Array.isArray(tax)) {
+    for (const root of tax) {
+      if (search(root, [])) break;
+    }
+  } else {
+    search(tax, []);
+  }
+  // Return list of names from root to leaf (inclusive)
+  return foundPath.map(n => n.name);
+}
+
+// --- Helper: Given leaf collection name, return full branch as node objects (with node_slug, etc.)
+function getTaxonomyBranchNodesFromLeaf(leafName) {
+  const tax = loadTaxonomia();
+  if (!tax) return [];
+  function normalize(s) {
+    return String(s || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[‐‑–—]/g, "-");
+  }
+  let foundPath = [];
+  function search(node, path) {
+    if (!node) return false;
+    if (normalize(node.name) === normalize(leafName)) {
+      foundPath = [...path, node];
+      return true;
+    }
+    if (Array.isArray(node.children)) {
+      for (const ch of node.children) {
+        if (search(ch, [...path, node])) return true;
+      }
+    }
+    return false;
+  }
+  if (Array.isArray(tax)) {
+    for (const root of tax) {
+      if (search(root, [])) break;
+    }
+  } else {
+    search(tax, []);
+  }
+  return foundPath;
+}
+
 
 export const config = { api: { bodyParser: false } };
 
@@ -342,6 +436,18 @@ async function restEnsureCustomCollection(title) {
   return await restCreateCustomCollection(title);
 }
 
+// --- Helper: Get custom collection by ID, including image and title
+async function restGetCustomCollection(collectionId) {
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${collectionId}.json?fields=id,image,title`;
+  const r = await fetch(url, {
+    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
+  });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`REST get custom_collection failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  return j.custom_collection || null;
+}
+
 async function restCollectExists(productId, collectionId) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json?product_id=${productId}&collection_id=${collectionId}&limit=1`;
   const r = await fetch(url, {
@@ -365,6 +471,33 @@ async function restCreateCollect(productId, collectionId) {
   if (!r.ok) throw new Error(`REST create collect failed: ${r.status} ${await r.text()}`);
   const j = await r.json();
   return j.collect;
+}
+
+// --- Files helpers (REST)
+async function restSearchFilesByFilename(filename) {
+  // Search by exact filename within Shopify Files
+  // Docs: GET /admin/api/{version}/files.json?query=filename:<name>
+  const q = `filename:${filename}`;
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/files.json?query=${encodeURIComponent(q)}&limit=5`;
+  const r = await fetch(url, { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }});
+  if (!r.ok) throw new Error(`REST files search failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  const list = Array.isArray(j.files) ? j.files : [];
+  return list;
+}
+
+async function findImageUrlForNodeSlug(node_slug) {
+  const candidates = [];
+  if (node_slug) {
+    candidates.push(`${node_slug}.png`, `${node_slug}.jpg`, `${node_slug}.jpeg`, `${node_slug}.webp`);
+  }
+  candidates.push("default.png", "default.jpg", "default.jpeg", "default.webp");
+  for (const name of candidates) {
+    const files = await restSearchFilesByFilename(name);
+    const hit = files.find(f => (f?.filename || "").toLowerCase() === name.toLowerCase());
+    if (hit?.url) return hit.url; // CDN URL
+  }
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -497,27 +630,59 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) Collections (attach only to EXISTING custom collections) ---
-    // out.collections: názvy kolekcií podľa pravidiel. Smart collections sa riešia tagmi.
+    // --- 3) Collections (taxonomy logic: ensure all ancestors, create if missing, assign images, ensure collects) ---
     if (Array.isArray(out.collections) && out.collections.length) {
-      const productNumericId = body.id; // z webhook payloadu (numeric)
-      for (const colTitle of out.collections) {
-        const title = String(colTitle).trim();
-        if (!title) continue;
-        try {
-          // nájdeme iba existujúcu Custom collection; ak neexistuje, preskočíme
-          const coll = await restFindCustomCollectionByTitle(title);
-          if (!coll) {
-            console.warn("Collection not found, skipping (no create):", title);
-            continue;
+      const productNumericId = body.id;
+      for (const leafColTitle of out.collections) {
+        const leafTitle = String(leafColTitle).trim();
+        if (!leafTitle) continue;
+        // Get taxonomy branch (all ancestors to root) as nodes
+        const branchNodes = getTaxonomyBranchNodesFromLeaf(leafTitle);
+        for (const node of branchNodes) {
+          const collTitle = node.name;
+          if (!collTitle) continue;
+          try {
+            // Ensure collection exists (create if missing)
+            const coll = await restEnsureCustomCollection(collTitle);
+            // --- Assign image to collection (stricter: only if not already set) ---
+            try {
+              // Fetch latest collection data (with image)
+              const full = await restGetCustomCollection(coll.id);
+              if (!full?.image?.src) {
+                if (node.node_slug) {
+                  const fileUrl = await findImageUrlForNodeSlug(node.node_slug);
+                  if (fileUrl) {
+                    const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${coll.id}.json`;
+                    await fetch(url, {
+                      method: "PUT",
+                      headers: {
+                        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+                        "Content-Type": "application/json"
+                      },
+                      body: JSON.stringify({
+                        custom_collection: {
+                          id: coll.id,
+                          image: { src: fileUrl }
+                        }
+                      })
+                    });
+                  }
+                }
+              }
+              // else: image is already set, skip
+            } catch (imgErr) {
+              // Ignore image errors, continue
+              //console.warn("Collection image assign error", collTitle, imgErr?.message || imgErr);
+            }
+            // Ensure product is in collection (collect)
+            const exists = await restCollectExists(productNumericId, coll.id);
+            if (!exists) {
+              await restCreateCollect(productNumericId, coll.id);
+            }
+          } catch (err) {
+            console.error("Collection ensure/attach error:", collTitle, err?.message || err);
+            // continue to next
           }
-          const exists = await restCollectExists(productNumericId, coll.id);
-          if (!exists) {
-            await restCreateCollect(productNumericId, coll.id);
-          }
-        } catch (err) {
-          console.error("Collection attach error:", title, err?.message || err);
-          // pokračujeme na ďalšie kolekcie
         }
       }
     }
