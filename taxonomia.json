@@ -1,0 +1,450 @@
+
+{
+  "ASSETS_BASE": "files://collections",
+  "IMAGE_PATTERN": "{{node_slug}}.png",
+
+  "BRANDS": [
+    "AUDI","BMW","CITROËN","DACIA","FORD","HONDA","HYUNDAI","KIA","MAZDA","MERCEDES-BENZ","MITSUBISHI","NISSAN","OPEL","PEUGEOT","PORSCHE","RANGE ROVER","RENAULT","SEAT","ŠKODA","SUBARU","SUZUKI","TESLA","TOYOTA","VOLKSWAGEN"
+  ],
+
+  "TEMPLATE": {
+    "title": "{{BRAND}}",
+    "facets": ["model","rok_od","rok_do"],
+    "children": [
+      {
+        "title": "{{BRAND}} Exteriér",
+        "node_slug": "exterier",
+        "children": [
+          {
+            "title": "{{BRAND}} Karoséria",
+            "node_slug": "karoseria",
+            "children": [
+              {
+                "title": "{{BRAND}} Spojler",
+                "node_slug": "spojler",
+                "children": [
+                  { "title": "{{BRAND}} Predný spojler", "node_slug": "predny-spojler" },
+                  { "title": "{{BRAND}} Zadný spojler", "node_slug": "zadny-spojler" }
+                ]
+              },
+              { "title": "{{BRAND}} Prahové lišty", "node_slug": "prahove-listy" },
+              { "title": "{{BRAND}} Difúzor", "node_slug": "difuzor" },
+              { "title": "{{BRAND}} Ochrana nárazníka", "node_slug": "ochrana-naraznika" },
+              { "title": "{{BRAND}} Karoséria iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Osvetlenie",
+            "node_slug": "osvetlenie",
+            "children": [
+              { "title": "{{BRAND}} LED denné svietenie", "node_slug": "led-denne-svietenie" },
+              { "title": "{{BRAND}} Žiarovky a LED", "node_slug": "ziarovky-a-led" },
+              { "title": "{{BRAND}} Hmlovky", "node_slug": "hmlovky" },
+              { "title": "{{BRAND}} Svetlá a kryty", "node_slug": "svetla-a-kryty" },
+              { "title": "{{BRAND}} Osvetlenie iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Kolesá",
+            "node_slug": "kolesa",
+            "children": [
+              { "title": "{{BRAND}} Disky", "node_slug": "disky" },
+              { "title": "{{BRAND}} Pneumatiky", "node_slug": "pneumatiky" },
+              { "title": "{{BRAND}} Ventilky a príslušenstvo", "node_slug": "ventilky-a-prislusenstvo" },
+              { "title": "{{BRAND}} Skrutky a matice", "node_slug": "skrutky-a-matice" },
+              { "title": "{{BRAND}} Kolesá iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Okná a zrkadlá",
+            "node_slug": "okna-a-zrkadla",
+            "children": [
+              { "title": "{{BRAND}} Stierače", "node_slug": "stierace" },
+              { "title": "{{BRAND}} Deflektory okien", "node_slug": "deflektory-okien" },
+              { "title": "{{BRAND}} Kryty zrkadiel", "node_slug": "kryty-zrkadiel" },
+              { "title": "{{BRAND}} Okná a zrkadlá iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Strecha a nosiče",
+            "node_slug": "strecha-a-nosice",
+            "children": [
+              { "title": "{{BRAND}} Strešné nosiče", "node_slug": "stresne-nosice" },
+              { "title": "{{BRAND}} Strešné boxy", "node_slug": "stresne-boxy" },
+              { "title": "{{BRAND}} Držiaky bicyklov", "node_slug": "drziaky-bicyklov" },
+              { "title": "{{BRAND}} Strecha a nosiče iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Parkovanie a bezpečnosť",
+            "node_slug": "parkovanie-a-bezpecnost",
+            "children": [
+              { "title": "{{BRAND}} Parkovacie senzory", "node_slug": "parkovacie-senzory" },
+              { "title": "{{BRAND}} Kamery a cúvacie sety", "node_slug": "kamery-a-cuvacie-sety" },
+              { "title": "{{BRAND}} Zámky kolies", "node_slug": "zamky-kolies" },
+              { "title": "{{BRAND}} Parkovanie a bezpečnosť iné", "node_slug": "ine" }
+            ]
+          }
+        ]
+      },
+
+      {
+        "title": "{{BRAND}} Interiér",
+        "node_slug": "interier",
+        "children": [
+          {
+            "title": "{{BRAND}} Volanty",
+            "node_slug": "volanty",
+            "children": [
+              { "title": "{{BRAND}} Volanty iné", "node_slug": "ine" }
+            ]
+          },
+
+          {
+            "title": "{{BRAND}} Poťahy a koberce",
+            "node_slug": "potahy-a-koberce",
+            "children": [
+              { "title": "{{BRAND}} Poťahy sedadiel", "node_slug": "potahy-sedadiel" },
+              { "title": "{{BRAND}} Gumené koberce", "node_slug": "gumene-koberce" },
+              { "title": "{{BRAND}} Textilné koberce", "node_slug": "textilne-koberce" },
+              { "title": "{{BRAND}} Vaničky do kufra", "node_slug": "vanicky-do-kufra" },
+              { "title": "{{BRAND}} Poťahy a koberce iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Organizácia a úložné riešenia",
+            "node_slug": "organizacia-a-ulozne-riesenia",
+            "children": [
+              { "title": "{{BRAND}} Držiaky telefónu", "node_slug": "drziaky-telefonu" },
+              { "title": "{{BRAND}} Organizéry do auta", "node_slug": "organizery-do-auta" },
+              { "title": "{{BRAND}} Sieťky a popruhy", "node_slug": "sietky-a-popruhy" },
+              { "title": "{{BRAND}} Organizácia a úložné riešenia iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Elektronika a komfort",
+            "node_slug": "elektronika-a-komfort",
+            "children": [
+              { "title": "{{BRAND}} Nabíjačky a káble", "node_slug": "nabijacky-a-kable" },
+              { "title": "{{BRAND}} CarPlay/Android Auto moduly", "node_slug": "carplay-android-auto" },
+              { "title": "{{BRAND}} Handsfree a BT adaptéry", "node_slug": "handsfree-a-bt-adaptery" },
+              { "title": "{{BRAND}} Osvetlenie interiéru", "node_slug": "osvetlenie-interieru" },
+              { "title": "{{BRAND}} Elektronika a komfort iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Ochrana interiéru",
+            "node_slug": "ochrana-interieru",
+            "children": [
+              { "title": "{{BRAND}} Ochranné fólie", "node_slug": "ochranne-folie" },
+              { "title": "{{BRAND}} Autopoistky a drobný materiál", "node_slug": "autopoistky-a-drobny-material" },
+              { "title": "{{BRAND}} Slnečné clony", "node_slug": "slnecne-clony" },
+              { "title": "{{BRAND}} Ochrana interiéru iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Bezpečnosť a povinná výbava",
+            "node_slug": "bezpecnost-a-povinna-vybava",
+            "children": [
+              { "title": "{{BRAND}} Lekárničky", "node_slug": "lekarnicky" },
+              { "title": "{{BRAND}} Hasiace prístroje", "node_slug": "hasiace-pristroje" },
+              { "title": "{{BRAND}} Výstražné prvky", "node_slug": "vystrazne-prvky" },
+              { "title": "{{BRAND}} Bezpečnosť a povinná výbava iné", "node_slug": "ine" }
+            ]
+          }
+        ]
+      },
+
+      {
+        "title": "{{BRAND}} Komponenty",
+        "node_slug": "komponenty",
+        "children": [
+          {
+            "title": "{{BRAND}} Motor",
+            "node_slug": "motor",
+            "children": [
+              { "title": "{{BRAND}} Filtre oleja", "node_slug": "filtre-oleja" },
+              { "title": "{{BRAND}} Filtre vzduchu", "node_slug": "filtre-vzduchu" },
+              { "title": "{{BRAND}} Filtre paliva", "node_slug": "filtre-paliva" },
+              { "title": "{{BRAND}} Rozvody a remene", "node_slug": "rozvody-a-remene" },
+              { "title": "{{BRAND}} Zapaľovanie a žeraviče", "node_slug": "zapalovanie-a-zeravice" },
+              { "title": "{{BRAND}} Tesnenia a guferá", "node_slug": "tesnenia-a-gufera" },
+              { "title": "{{BRAND}} Motor iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Brzdy",
+            "node_slug": "brzdy",
+            "children": [
+              { "title": "{{BRAND}} Brzdové kotúče", "node_slug": "brzdove-kotuce" },
+              { "title": "{{BRAND}} Brzdové platničky", "node_slug": "brzdove-platnicky" },
+              { "title": "{{BRAND}} Strmene a príslušenstvo", "node_slug": "strmene-a-prislusenstvo" },
+              { "title": "{{BRAND}} Brzdová kvapalina", "node_slug": "brzdova-kvapalina" },
+              { "title": "{{BRAND}} Brzdy iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Zavesenie kolies",
+            "node_slug": "zavesenie-kolies",
+            "children": [
+              { "title": "{{BRAND}} Tlmiče", "node_slug": "tlmice" },
+              { "title": "{{BRAND}} Pružiny", "node_slug": "pruziny" },
+              { "title": "{{BRAND}} Ramená a čapy", "node_slug": "ramena-a-capy" },
+              { "title": "{{BRAND}} Stabilizátory a tyčky", "node_slug": "stabilizatory-a-tycky" },
+              { "title": "{{BRAND}} Zavesenie kolies iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Chladenie a kúrenie",
+            "node_slug": "chladenie-a-kurenie",
+            "children": [
+              { "title": "{{BRAND}} Chladiče", "node_slug": "chladice" },
+              { "title": "{{BRAND}} Termostaty", "node_slug": "termostaty" },
+              { "title": "{{BRAND}} Vodné pumpy", "node_slug": "vodne-pumpy" },
+              { "title": "{{BRAND}} Chladenie a kúrenie iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Výfuk",
+            "node_slug": "vyfuk",
+            "children": [
+              { "title": "{{BRAND}} Tlmiče výfuku", "node_slug": "tlmice-vyfuku" },
+              { "title": "{{BRAND}} Katalyzátory a DPF", "node_slug": "katalyzatory-a-dpf" },
+              { "title": "{{BRAND}} Lambda sondy", "node_slug": "lambda-sondy" },
+              { "title": "{{BRAND}} Výfuk iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Prevodovka a spojka",
+            "node_slug": "prevodovka-a-spojka",
+            "children": [
+              { "title": "{{BRAND}} Spojkové sady", "node_slug": "spojkove-sady" },
+              { "title": "{{BRAND}} Dvojhmotové zotrvačníky", "node_slug": "dvojhmotove-zotrvacniky" },
+              { "title": "{{BRAND}} Oleje a aditíva prevodovky", "node_slug": "oleje-a-aditiva-prevodovky" },
+              { "title": "{{BRAND}} Prevodovka a spojka iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Elektrika",
+            "node_slug": "elektrika",
+            "children": [
+              { "title": "{{BRAND}} Batérie", "node_slug": "baterie" },
+              { "title": "{{BRAND}} Alternátory a štartéry", "node_slug": "alternatory-a-startery" },
+              { "title": "{{BRAND}} Snímače a moduly", "node_slug": "snimace-a-moduly" },
+              { "title": "{{BRAND}} Elektrika iné", "node_slug": "ine" }
+            ]
+          },
+          {
+            "title": "{{BRAND}} Palivová sústava",
+            "node_slug": "palivova-sustava",
+            "children": [
+              { "title": "{{BRAND}} Palivové čerpadlá", "node_slug": "palivove-cerpadla" },
+              { "title": "{{BRAND}} Vstrekovače", "node_slug": "vstrekovace" },
+              { "title": "{{BRAND}} Tlakové regulátory", "node_slug": "tlakove-regulatory" },
+              { "title": "{{BRAND}} Palivová sústava iné", "node_slug": "ine" }
+            ]
+          }
+        ]
+      },
+
+      {
+        "title": "{{BRAND}} Oblečenie",
+        "node_slug": "oblecenie",
+        "children": [
+          { "title": "{{BRAND}} Tričká", "node_slug": "tricka" },
+          { "title": "{{BRAND}} Mikiny", "node_slug": "mikiny" },
+          { "title": "{{BRAND}} Bundy", "node_slug": "bundy" },
+          { "title": "{{BRAND}} Čiapky", "node_slug": "ciapky" },
+          { "title": "{{BRAND}} Šiltovky", "node_slug": "siltovky" },
+          { "title": "{{BRAND}} Oblečenie iné", "node_slug": "ine" }
+        ]
+      }
+    ]
+  },
+
+  "UNIVERSAL_COLLECTIONS": [
+    {
+      "title": "Interiér",
+      "node_slug": "interier",
+      "children": [
+        {
+          "title": "Poťahy a koberce",
+          "node_slug": "potahy-a-koberce",
+          "children": [
+            { "title": "Poťahy sedadiel", "node_slug": "potahy-sedadiel" },
+            { "title": "Gumené koberce", "node_slug": "gumene-koberce" },
+            { "title": "Textilné koberce", "node_slug": "textilne-koberce" },
+            { "title": "Vaničky do kufra", "node_slug": "vanicky-do-kufra" },
+            { "title": "Poťahy a koberce iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Organizácia a úložné riešenia",
+          "node_slug": "organizacia-a-ulozne-riesenia",
+          "children": [
+            { "title": "Držiaky telefónu", "node_slug": "drziaky-telefonu" },
+            { "title": "Organizéry do auta", "node_slug": "organizery-do-auta" },
+            { "title": "Sieťky a popruhy", "node_slug": "sietky-a-popruhy" },
+            { "title": "Organizácia a úložné riešenia iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Elektronika a komfort",
+          "node_slug": "elektronika-a-komfort",
+          "children": [
+            { "title": "Nabíjačky a káble", "node_slug": "nabijacky-a-kable" },
+            { "title": "CarPlay/Android Auto moduly", "node_slug": "carplay-android-auto" },
+            { "title": "Handsfree a BT adaptéry", "node_slug": "handsfree-a-bt-adaptery" },
+            { "title": "Osvetlenie interiéru", "node_slug": "osvetlenie-interieru" },
+            { "title": "Elektronika a komfort iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Ochrana interiéru",
+          "node_slug": "ochrana-interieru",
+          "children": [
+            { "title": "Ochranné fólie", "node_slug": "ochranne-folie" },
+            { "title": "Autopoistky a drobný materiál", "node_slug": "autopoistky-a-drobny-material" },
+            { "title": "Slnečné clony", "node_slug": "slnecne-clony" },
+            { "title": "Ochrana interiéru iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Bezpečnosť a povinná výbava",
+          "node_slug": "bezpecnost-a-povinna-vybava",
+          "children": [
+            { "title": "Lekárničky", "node_slug": "lekarnicky" },
+            { "title": "Hasiace prístroje", "node_slug": "hasiace-pristroje" },
+            { "title": "Výstražné prvky", "node_slug": "vystrazne-prvky" },
+            { "title": "Bezpečnosť a povinná výbava iné", "node_slug": "ine" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "title": "Exteriér",
+      "node_slug": "exterier",
+      "children": [
+        {
+          "title": "Karoséria",
+          "node_slug": "karoseria",
+          "children": [
+            {
+              "title": "Spojler",
+              "node_slug": "spojler",
+              "children": [
+                { "title": "Predný spojler", "node_slug": "predny-spojler" },
+                { "title": "Zadný spojler", "node_slug": "zadny-spojler" }
+              ]
+            },
+            { "title": "Prahové lišty", "node_slug": "prahove-listy" },
+            { "title": "Difúzor", "node_slug": "difuzor" },
+            { "title": "Ochrana nárazníka", "node_slug": "ochrana-naraznika" },
+            { "title": "Karoséria iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Osvetlenie",
+          "node_slug": "osvetlenie",
+          "children": [
+            { "title": "LED denné svietenie", "node_slug": "led-denne-svietenie" },
+            { "title": "Žiarovky a LED", "node_slug": "ziarovky-a-led" },
+            { "title": "Hmlovky", "node_slug": "hmlovky" },
+            { "title": "Svetlá a kryty", "node_slug": "svetla-a-kryty" },
+            { "title": "Osvetlenie iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Kolesá",
+          "node_slug": "kolesa",
+          "children": [
+            { "title": "Disky", "node_slug": "disky" },
+            { "title": "Pneumatiky", "node_slug": "pneumatiky" },
+            { "title": "Ventilky a príslušenstvo", "node_slug": "ventilky-a-prislusenstvo" },
+            { "title": "Skrutky a matice", "node_slug": "skrutky-a-matice" },
+            { "title": "Kolesá iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Okná a zrkadlá",
+          "node_slug": "okna-a-zrkadla",
+          "children": [
+            { "title": "Stierače", "node_slug": "stierace" },
+            { "title": "Deflektory okien", "node_slug": "deflektory-okien" },
+            { "title": "Kryty zrkadiel", "node_slug": "kryty-zrkadiel" },
+            { "title": "Okná a zrkadlá iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Strecha a nosiče",
+          "node_slug": "strecha-a-nosice",
+          "children": [
+            { "title": "Strešné nosiče", "node_slug": "stresne-nosice" },
+            { "title": "Strešné boxy", "node_slug": "stresne-boxy" },
+            { "title": "Držiaky bicyklov", "node_slug": "drziaky-bicyklov" },
+            { "title": "Strecha a nosiče iné", "node_slug": "ine" }
+          ]
+        },
+        {
+          "title": "Parkovanie a bezpečnosť",
+          "node_slug": "parkovanie-a-bezpecnost",
+          "children": [
+            { "title": "Parkovacie senzory", "node_slug": "parkovacie-senzory" },
+            { "title": "Kamery a cúvacie sety", "node_slug": "kamery-a-cuvacie-sety" },
+            { "title": "Zámky kolies", "node_slug": "zamky-kolies" },
+            { "title": "Parkovanie a bezpečnosť iné", "node_slug": "ine" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "title": "Starostlivosť o Auto",
+      "node_slug": "starostlivost-o-auto",
+      "children": [
+        { "title": "Čističe", "node_slug": "cistice" },
+        { "title": "Vosky", "node_slug": "vosky" },
+        { "title": "Detailing doplnky (utierky, kefy)", "node_slug": "detailing-doplnky" },
+        { "title": "Ochranné povlaky a kryty", "node_slug": "ochranne-povlaky-a-kryty" },
+        { "title": "Starostlivosť o Auto iné", "node_slug": "ine" }
+      ]
+    },
+
+    {
+      "title": "Vychytávky",
+      "node_slug": "vychytavky",
+      "children": [
+        { "title": "Gadgety a smart doplnky", "node_slug": "gadgety-a-smart-doplnky" },
+        { "title": "Bezpečnostné vychytávky", "node_slug": "bezpecnostne-vychytavky" },
+        { "title": "Cestovné príslušenstvo", "node_slug": "cestovne-prislusenstvo" },
+        { "title": "Vychytávky iné", "node_slug": "ine" }
+      ]
+    },
+
+    {
+      "title": "Oblečenie",
+      "node_slug": "oblecenie",
+      "children": [
+        { "title": "Tričká", "node_slug": "tricka" },
+        { "title": "Mikiny", "node_slug": "mikiny" },
+        { "title": "Bundy", "node_slug": "bundy" },
+        { "title": "Čiapky", "node_slug": "ciapky" },
+        { "title": "Šiltovky", "node_slug": "siltovky" },
+        { "title": "Oblečenie iné", "node_slug": "ine" }
+      ]
+    },
+
+    {
+      "title": "Doplnky",
+      "node_slug": "doplnky",
+      "children": [
+        { "title": "Kľúčenky", "node_slug": "klucenky" },
+        { "title": "Nášivky a odznaky", "node_slug": "nasivky-a-odznaky" },
+        { "title": "Pásy a opasky", "node_slug": "pasy-a-opasky" },
+        { "title": "Okuliare", "node_slug": "okuliare" },
+        { "title": "Doplnky iné", "node_slug": "ine" }
+      ]
+    }
+  ]
+}
