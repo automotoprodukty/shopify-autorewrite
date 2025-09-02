@@ -549,7 +549,12 @@ async function restSearchFilesByFilename(filename) {
   const q = `filename:${filename}`;
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/files.json?query=${encodeURIComponent(q)}&limit=5`;
   const r = await fetchWithRetry(url, { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }});
+  if (r.status === 404) {
+    console.warn("Files search 404 Not Found for", filename);
+    return [];
+  }
   if (!r.ok) throw new Error(`REST files search failed: ${r.status} ${await r.text()}`);
+  
   const j = await r.json();
   const list = Array.isArray(j.files) ? j.files : [];
   return list;
@@ -739,17 +744,30 @@ CIEĽ: Vráť JSON s kľúčmi:
     }
 
     if (!Array.isArray(out?.collections) || out.collections.length === 0) {
-      // 1) Skús odvodiť z tagov v webhook payload-e
-      const tagsFromBody = body?.tags || body?.product?.tags || [];
-      const guess = deriveLeafFromTags(tagsFromBody);
-      if (guess) {
-        out.collections = [guess];
-        console.warn("AI returned no collections -> using TAG fallback:", out.collections);
-      } else {
-        // 2) Dočasný fallback pre testovanie (zmaž po overení)
-        out.collections = ["AUDI Brzdové platničky"];
-        console.warn("AI returned no collections -> using TEMP fallback:", out.collections);
-      }
+        const tagsFromBody = body?.tags || body?.product?.tags || [];
+        const guess = deriveLeafFromTags(tagsFromBody);
+        if (guess) {
+            out.collections = [guess];
+            console.warn("AI returned no collections -> using TAG fallback:", out.collections);
+        }
+    }
+
+    // --- Guard: ak je produkt univerzálny alebo multi-brand, nespúšťaj značkové vetvy
+    function normTag(s){ return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim(); }
+    const brandsList = ["audi","bmw","mercedes-benz","mercedes","škoda","skoda","volkswagen","vw","seat","peugeot","citroen","renault","ford","toyota","honda","hyundai","kia","mazda","opel","nissan","fiat","volvo","mini","porsche","tesla","dacia"];
+    const allTagsNow = [
+      ...(p.tags || []),
+      ...(out.base_tags || []),
+      ...(out.subtags || [])
+    ].map(normTag);
+
+    const brandHits = new Set(brandsList.filter(b => allTagsNow.includes(normTag(b))));
+    const isUniversal = allTagsNow.includes(normTag("Univerzálny"));
+
+    if (isUniversal || brandHits.size !== 1) {
+    console.warn("UNIVERSAL/MULTI-BRAND detected -> skipping brand taxonomy ensure/attach");
+    // odfiltruj brandové kolekcie (začínajú veľkým BRAND slovom)
+    out.collections = (out.collections || []).filter(c => !/^[A-ZÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ]+\s/.test(c));
     }
 
     // --- 1) Update základných polí + názvy optionov
