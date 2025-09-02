@@ -137,6 +137,100 @@ function getTaxonomyBranchNodesFromLeaf(leafName) {
   return foundPath;
 }
 
+// --- Brand detection (from product/vendor/tags and AI tags later)
+function detectBrandFromProduct(p, out = {}) {
+  const norm = (s)=>String(s||"").toLowerCase();
+  const hay = [
+    p?.vendor, p?.title, ...(p?.tags||[]),
+    ...(Array.isArray(out?.base_tags)? out.base_tags: []),
+    ...(Array.isArray(out?.subtags)? out.subtags: [])
+  ].filter(Boolean).map(norm).join(" ");
+  const map = {
+    "audi":"AUDI","bmw":"BMW","mercedes-benz":"MERCEDES-BENZ","mercedes":"MERCEDES-BENZ",
+    "škoda":"ŠKODA","skoda":"ŠKODA","volkswagen":"VOLKSWAGEN","vw":"VOLKSWAGEN",
+    "seat":"SEAT","peugeot":"PEUGEOT","citroen":"CITROEN","renault":"RENAULT","ford":"FORD",
+    "toyota":"TOYOTA","honda":"HONDA","hyundai":"HYUNDAI","kia":"KIA","mazda":"MAZDA","opel":"OPEL",
+    "nissan":"NISSAN","fiat":"FIAT","volvo":"VOLVO","mini":"MINI","porsche":"PORSCHE","tesla":"TESLA","dacia":"DACIA"
+  };
+  for (const k of Object.keys(map)) {
+    if (hay.includes(k)) return map[k];
+  }
+  return null;
+}
+
+// --- Leaves under a brand root (return only leaf nodes with node_slug)
+function getBrandLeaves(brandName) {
+  const tax = loadTaxonomia();
+  if (!tax?.length || !brandName) return [];
+  const norm = (s)=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const root = tax.find(r => norm(r.name||r.title) === norm(brandName));
+  if (!root) return [];
+  const leaves = [];
+  (function walk(n, path=[]) {
+    const kids = Array.isArray(n.children) ? n.children : [];
+    const me = { ...n, path: [...path, (n.name||n.title)] };
+    if (!kids.length) {
+      if (me.node_slug) leaves.push(me);
+    } else {
+      kids.forEach(ch => walk(ch, me.path));
+    }
+  })(root, []);
+  return leaves; // [{name,title,node_slug,facets,path:[...]}]
+}
+
+// --- Find full branch by node_slug within a brand root
+function getBranchBySlug(brandName, nodeSlug) {
+  const tax = loadTaxonomia();
+  if (!tax?.length || !brandName || !nodeSlug) return [];
+  const norm = (s)=>String(s||"").toLowerCase();
+  const root = tax.find(r => norm(r.name||r.title) === norm(brandName));
+  if (!root) return [];
+  const path = [];
+  let found = null;
+  (function dfs(n) {
+    path.push(n);
+    if (String(n.node_slug||"") === String(nodeSlug)) { found = [...path]; }
+    if (!found) (n.children||[]).forEach(dfs);
+    if (!found) path.pop();
+  })(root);
+  return found || [];
+}
+
+// --- Lightweight AI call to pick collection slugs from whitelist
+async function aiPickCollectionSlugs({ title, vendor, tags, description, allowedLeaves }) {
+  const sys = `ÚLOHA: Vyber presne tie node_slug(y) z poskytnutého zoznamu, ktoré najlepšie zodpovedajú produktu.
+- Vráť len JSON {"collections_node_slugs":[...]}.
+- Používaj IBA node_slug z whitelistu. Ak si neistý, vráť prázdne pole.
+- Nevracaj iné kľúče, názvy ani texty.`;
+  const user = {
+    product: {
+      title, vendor, tags: (tags||[]).slice(0,20),
+      description: String(description||"").slice(0,2000)
+    },
+    allowed_leaves: Array.isArray(allowedLeaves) ? allowedLeaves : [] // [{slug,label}]
+  };
+  const body = {
+    model: "gpt-4o-mini",
+    temperature: 0.0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: JSON.stringify(user) }
+    ]
+  };
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  const raw = j?.choices?.[0]?.message?.content || "{}";
+  try { return JSON.parse(raw); } catch { return { collections_node_slugs: [] }; }
+}
+
 
 export const config = { api: { bodyParser: false } };
 
@@ -718,6 +812,26 @@ CIEĽ: Vráť JSON s kľúčmi:
     // --- DIAGNOSTICS: log AI collections & provide safe fallback ---
     console.log("AI collections =>", out?.collections);
 
+    // --- Slug-only classification (branch whitelist)
+    let slugPicks = [];
+    const detectedBrand = detectBrandFromProduct(p, out);
+    if (detectedBrand) {
+      const leaves = getBrandLeaves(detectedBrand); // whitelist
+      const allowed = leaves.map(x => ({ slug: x.node_slug, label: x.path ? x.path.join(" → ") : (x.name||x.title) }))
+                            .filter(x => x.slug);
+      try {
+        const cls = await aiPickCollectionSlugs({
+          title: p.title, vendor: p.vendor, tags: p.tags, description: p.descriptionHtml, allowedLeaves: allowed
+        });
+        slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
+        console.log("AI slug picks =>", slugPicks);
+      } catch (e) {
+        console.warn("AI slug-pick failed:", e?.message || e);
+      }
+    } else {
+      console.warn("Brand not detected -> skipping slug-only classification");
+    }
+
     // Simple tag-based fallback helper (brand + základné kľúčové slová)
     function deriveLeafFromTags(tags = []) {
       const t = (Array.isArray(tags) ? tags : [])
@@ -903,36 +1017,42 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) Collections (taxonomy logic: ensure all ancestors, create if missing, assign images, ensure collects) ---
-    if (Array.isArray(out.collections) && out.collections.length) {
+    // --- 3) Collections (STRICT taxonomy: prefer slug picks, fallback to name-based only if provided)
+    if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
+      const productNumericId = body.id;
+      for (const slug of slugPicks) {
+        const branchNodes = getBranchBySlug(detectedBrand, slug);
+        console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name));
+        if (!branchNodes.length) {
+          console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
+          continue;
+        }
+        const ensured = await ensureBranchAndTaxonomy(branchNodes);
+        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
+        for (const n of ensured) {
+          await restCreateCollect(productNumericId, n.id);
+        }
+      }
+    } else if (Array.isArray(out.collections) && out.collections.length) {
       const productNumericId = body.id;
       for (const leafColTitle of out.collections) {
         const leafTitle = String(leafColTitle).trim();
         if (!leafTitle) continue;
-
-        // Diagnostics: what leaf we were asked to process
-        console.log("COLL: requested leaf =", leafTitle);
-
-        // Get taxonomy branch (all ancestors to root) as nodes
+        console.log("COLL (fallback by name): requested leaf =", leafTitle);
         const branchNodes = getTaxonomyBranchNodesFromLeaf(leafTitle);
         console.log("TAXO BRANCH =>", leafTitle, "=>", branchNodes.map(n => n.name));
-
-        // If taxonomy doesn't contain this leaf, skip gracefully (prevents creating wrong collections)
         if (!Array.isArray(branchNodes) || branchNodes.length === 0) {
           console.warn("TAXO: no branch found in taxonomia.json for:", leafTitle, "-> skip ensure/attach");
           continue;
         }
-
-        // Ensure whole branch first (ids + taxonomy metafields + images)
         const ensured = await ensureBranchAndTaxonomy(branchNodes);
         console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
-
-        // Attach product to every node in the branch (leaf + ancestors)
         for (const n of ensured) {
-          // Try to create; if it already exists, the 422 is ignored inside helper
           await restCreateCollect(productNumericId, n.id);
         }
       }
+    } else {
+      console.warn("Collections: no slug picks and no name-based collections -> skipping taxonomy attach");
     }
 
     // --- 4) anti-loop
