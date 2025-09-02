@@ -710,6 +710,28 @@ async function setCollectionTaxonomyFields(nodesEnsured) {
   }
 }
 
+// --- Custom Sub Collections metafield (list of collection references)
+async function restSetSubCollections(parentId, childIds = []) {
+  // writes to namespace 'custom', key 'sub_collections', type list.collection_reference
+  await restUpsertCollectionMetafield(
+    parentId,
+    "custom",
+    "sub_collections",
+    "list.collection_reference",
+    JSON.stringify(childIds)
+  );
+}
+
+// Link custom.sub_collections for a linear branch (each parent points to its direct child)
+async function setCustomSubCollectionsForBranch(nodesEnsured) {
+  for (let i = 0; i < nodesEnsured.length; i++) {
+    const parent = nodesEnsured[i];
+    const child = nodesEnsured[i + 1];
+    const childIds = child ? [child.id] : [];
+    await restSetSubCollections(parent.id, childIds);
+  }
+}
+
 // Ensure whole branch (create missing), set images if absent, then write taxonomy metafields
 async function ensureBranchAndTaxonomy(branchNodes) {
   const ensured = [];
@@ -758,6 +780,7 @@ async function ensureBranchAndTaxonomy(branchNodes) {
     ensured[i].childId = i < ensured.length - 1 ? ensured[i + 1].id : null;
   }
   await setCollectionTaxonomyFields(ensured);
+  await setCustomSubCollectionsForBranch(ensured);
   return ensured;
 }
 
@@ -832,108 +855,8 @@ CIEĽ: Vráť JSON s kľúčmi:
       console.warn("Brand not detected -> skipping slug-only classification");
     }
 
-    // Simple tag-based fallback helper (brand + základné kľúčové slová)
-    function deriveLeafFromTags(tags = []) {
-      const t = (Array.isArray(tags) ? tags : [])
-        .map(x => String(x || "").toLowerCase());
-
-      const brands = ["audi","bmw","mercedes-benz","mercedes","škoda","skoda","volkswagen","vw"];
-      const brand = brands.find(b => t.includes(b));
-      if (!brand) return null;
-
-      // Normalizácia brandu na zápis v taxonómii
-      let B = brand.toUpperCase();
-      if (B === "SKODA") B = "ŠKODA";
-      if (B === "VW") B = "VOLKSWAGEN";
-      if (B === "MERCEDES") B = "MERCEDES-BENZ";
-
-      // Heuristiky na pár najčastejších uzlov
-      if (t.some(x => /platn(i|í)cky/.test(x))) return `${B} Brzdové platničky`;
-      if (t.some(x => /kot(u|ú)c/.test(x)))    return `${B} Brzdový kotúč`;
-      if (t.includes("brzdy"))                 return `${B} Brzdy`;
-      if (t.includes("pneumatiky"))            return `${B} Pneumatiky`;
-      if (t.includes("olej"))                  return `${B} Olej`;
-
-      // Heuristiky pre interiér/exteriér a komponenty
-      if (t.some(x => /(interier|interiér)/.test(x))) return `${B} Interiér`;
-      if (t.some(x => /(exterier|exteriér)/.test(x))) return `${B} Exteriér`;
-      if (t.includes("komponenty"))              return `${B} Komponenty`;
-
-      return `${B} Komponenty`;
-    }
-
-    if (!Array.isArray(out?.collections) || out.collections.length === 0) {
-      const tagsFromBody = body?.tags || body?.product?.tags || [];
-      const guess = deriveLeafFromTags(tagsFromBody);
-      if (guess) {
-        const branch = getTaxonomyBranchNodesFromLeaf(guess);
-        if (branch.length) {
-          out.collections = [guess];
-          console.warn("TAG fallback (validated by taxonomy):", out.collections);
-        } else {
-          console.warn("TAG fallback guess not in taxonomy -> ignored:", guess);
-        }
-      }
-    }
-
-    // If still empty, try building from AI base_tags/subtags
-    if (!Array.isArray(out?.collections) || out.collections.length === 0) {
-      const candidates = new Set();
-      const sub = Array.isArray(out?.subtags) ? out.subtags : [];
-      const base = Array.isArray(out?.base_tags) ? out.base_tags : [];
-
-      // 1) Any subtag that maps to a taxonomy leaf
-      for (const s of sub) {
-        const leaf = String(s || "").trim();
-        if (!leaf) continue;
-        const branch = getTaxonomyBranchNodesFromLeaf(leaf);
-        if (branch.length) candidates.add(leaf);
-      }
-
-      // 2) Combine Brand x Category from base tags
-      const categories = ["Interiér","Exteriér","Komponenty","Brzdy","Pneumatiky","Olej","Doplnky","Oblečenie","Starostlivosť o auto","Vychytávky"];
-      const brands = base.filter(b => /[a-z]/i.test(b) && !categories.includes(b));
-      const cats = base.filter(c => categories.includes(c));
-      for (const b of brands) {
-        for (const c of cats) {
-          const leaf = `${b} ${c}`.trim();
-          const branch = getTaxonomyBranchNodesFromLeaf(leaf);
-          if (branch.length) candidates.add(leaf);
-        }
-      }
-
-      if (candidates.size) {
-        out.collections = Array.from(candidates);
-        console.warn("Derived collections from AI tags:", out.collections);
-      }
-    }
-
     // --- Guard: ak je produkt univerzálny alebo multi-brand, nespúšťaj značkové vetvy
-    function normTag(s){ return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim(); }
-    const brandsList = ["audi","bmw","mercedes-benz","mercedes","škoda","skoda","volkswagen","vw","seat","peugeot","citroen","renault","ford","toyota","honda","hyundai","kia","mazda","opel","nissan","fiat","volvo","mini","porsche","tesla","dacia"];
-    const allTagsNow = [
-      ...(p.tags || []),
-      ...(out.base_tags || []),
-      ...(out.subtags || [])
-    ].map(normTag);
-
-    const brandHits = new Set(brandsList.filter(b => allTagsNow.includes(normTag(b))));
-    const isUniversal = allTagsNow.includes(normTag("Univerzálny"));
-
-    if (isUniversal || brandHits.size !== 1) {
-      console.warn("UNIVERSAL/MULTI-BRAND detected -> skipping brand taxonomy ensure/attach");
-      // odfiltruj brandové kolekcie (začínajú veľkým BRAND slovom)
-      out.collections = (out.collections || []).filter(c => !/^[A-ZÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ]+\s/.test(c));
-    }
-
-    // --- Final safety: keep only collections that exist in taxonomy
-    if (Array.isArray(out.collections)) {
-      const before = [...out.collections];
-      out.collections = out.collections.filter(c => getTaxonomyBranchNodesFromLeaf(String(c).trim()).length > 0);
-      if (before.length !== out.collections.length) {
-        console.warn("Filtered non-taxonomy collections:", before.filter(c => !out.collections.includes(c)));
-      }
-    }
+    // (removed fallback logic: rely only on slug picks)
 
     // --- 1) Update základných polí + názvy optionov
     const tags = [
@@ -1017,7 +940,7 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) Collections (STRICT taxonomy: prefer slug picks, fallback to name-based only if provided)
+    // --- 3) Collections (STRICT taxonomy via slug picks only)
     if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
       const productNumericId = body.id;
       for (const slug of slugPicks) {
@@ -1030,29 +953,11 @@ CIEĽ: Vráť JSON s kľúčmi:
         const ensured = await ensureBranchAndTaxonomy(branchNodes);
         console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
         for (const n of ensured) {
-          await restCreateCollect(productNumericId, n.id);
-        }
-      }
-    } else if (Array.isArray(out.collections) && out.collections.length) {
-      const productNumericId = body.id;
-      for (const leafColTitle of out.collections) {
-        const leafTitle = String(leafColTitle).trim();
-        if (!leafTitle) continue;
-        console.log("COLL (fallback by name): requested leaf =", leafTitle);
-        const branchNodes = getTaxonomyBranchNodesFromLeaf(leafTitle);
-        console.log("TAXO BRANCH =>", leafTitle, "=>", branchNodes.map(n => n.name));
-        if (!Array.isArray(branchNodes) || branchNodes.length === 0) {
-          console.warn("TAXO: no branch found in taxonomia.json for:", leafTitle, "-> skip ensure/attach");
-          continue;
-        }
-        const ensured = await ensureBranchAndTaxonomy(branchNodes);
-        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
-        for (const n of ensured) {
-          await restCreateCollect(productNumericId, n.id);
+          await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
         }
       }
     } else {
-      console.warn("Collections: no slug picks and no name-based collections -> skipping taxonomy attach");
+      console.warn("Collections: no slug picks -> skipping taxonomy attach");
     }
 
     // --- 4) anti-loop
