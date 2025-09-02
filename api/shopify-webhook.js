@@ -16,88 +16,124 @@ function loadTaxonomia() {
   const file = path.join(process.cwd(), "taxonomia.json");
   try {
     const data = fs.readFileSync(file, "utf8");
-    taxonomia = JSON.parse(data);
+    const raw = JSON.parse(data);
+
+    // Normalizer helpers
+    const ensureName = (node) => {
+      if (!node) return node;
+      if (!node.name && node.title) node.name = node.title;
+      return node;
+    };
+
+    // Case A: already a full tree (array or single root)
+    const isPreExpandedTree = Array.isArray(raw) || (raw && raw.children) || (raw && raw.name) || (raw && raw.title);
+
+    if (isPreExpandedTree) {
+      const rootArr = Array.isArray(raw) ? raw : [raw];
+      // ensure every node has name & children
+      const fix = (n) => {
+        n = ensureName({ ...n });
+        n.children = Array.isArray(n.children) ? n.children.map(fix) : [];
+        return n;
+      };
+      taxonomia = rootArr.map(fix);
+      console.log("TAXO: loaded pre-expanded tree with", taxonomia.length, "root nodes");
+      return taxonomia;
+    }
+
+    // Case B: templated format with BRANDS + TEMPLATE ({ title: "{{BRAND}}", children:[...] })
+    const brands = Array.isArray(raw.BRANDS) ? raw.BRANDS : [];
+    const tpl = raw.TEMPLATE || null;
+    if (!tpl || brands.length === 0) {
+      throw new Error("taxonomia.json: unsupported format. Expect pre-expanded tree OR {BRANDS, TEMPLATE}.");
+    }
+
+    // Deep clone util
+    const deepClone = (o) => JSON.parse(JSON.stringify(o));
+
+    const expandBrand = (brand) => {
+      const replaceBrandTokens = (s) => String(s || "").replaceAll("{{BRAND}}", brand);
+      const walk = (node) => {
+        const src = ensureName(deepClone(node));
+        src.name = replaceBrandTokens(src.name || src.title || brand);
+        if (src.node_slug === undefined && src.slug) src.node_slug = src.slug; // compatibility
+        if (src.facets && !Array.isArray(src.facets)) {
+          // allow comma-separated string
+          src.facets = String(src.facets).split(",").map(x => x.trim()).filter(Boolean);
+        }
+        src.children = Array.isArray(src.children) ? src.children.map(walk) : [];
+        return src;
+      };
+      const root = walk({ name: tpl.title || "{{BRAND}}", children: tpl.children || [], node_slug: tpl.node_slug, facets: tpl.facets });
+      return root;
+    };
+
+    const expanded = brands.map(expandBrand);
+    taxonomia = expanded;
+    console.log("TAXO: expanded template for", brands.length, "brands");
+    return taxonomia;
   } catch (e) {
-    console.error("Failed to load taxonomia.json:", e);
-    taxonomia = null;
+    console.error("Failed to load/expand taxonomia.json:", e);
+    taxonomia = [];
+    return taxonomia;
   }
-  return taxonomia;
 }
 
 // --- Helper: Given leaf collection name, find full branch (ancestor names up to root) in taxonomy
 function getTaxonomyBranchFromLeaf(leafName) {
   const tax = loadTaxonomia();
-  if (!tax) return [];
-  // Find leaf node by name (case-insensitive, diacritics-insensitive)
-  function normalize(s) {
-    return String(s || "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[‐‑–—]/g, "-");
-  }
+  if (!tax || tax.length === 0) return [];
+  const normalize = (s) => String(s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[‐‑–—]/g, "-");
+  const want = normalize(leafName);
+
   let foundPath = [];
-  function search(node, path) {
+  const visit = (node, path=[]) => {
     if (!node) return false;
-    if (normalize(node.name) === normalize(leafName)) {
-      foundPath = [...path, node];
-      return true;
-    }
+    const nm = normalize(node.name || node.title);
+    if (nm === want) { foundPath = [...path, node]; return true; }
     if (Array.isArray(node.children)) {
       for (const ch of node.children) {
-        if (search(ch, [...path, node])) return true;
+        if (visit(ch, [...path, node])) return true;
       }
     }
     return false;
-  }
-  // Taxonomy can be an array or object
-  if (Array.isArray(tax)) {
-    for (const root of tax) {
-      if (search(root, [])) break;
-    }
-  } else {
-    search(tax, []);
-  }
-  // Return list of names from root to leaf (inclusive)
-  return foundPath.map(n => n.name);
+  };
+
+  for (const root of tax) { if (visit(root, [])) break; }
+  return foundPath.map(n => n.name || n.title);
 }
 
 // --- Helper: Given leaf collection name, return full branch as node objects (with node_slug, etc.)
 function getTaxonomyBranchNodesFromLeaf(leafName) {
   const tax = loadTaxonomia();
-  if (!tax) return [];
-  function normalize(s) {
-    return String(s || "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[‐‑–—]/g, "-");
-  }
+  if (!tax || tax.length === 0) return [];
+  const normalize = (s) => String(s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[‐‑–—]/g, "-");
+  const want = normalize(leafName);
+
   let foundPath = [];
-  function search(node, path) {
+  const visit = (node, path=[]) => {
     if (!node) return false;
-    if (normalize(node.name) === normalize(leafName)) {
-      foundPath = [...path, node];
-      return true;
-    }
+    const nm = normalize(node.name || node.title);
+    if (nm === want) { foundPath = [...path, node]; return true; }
     if (Array.isArray(node.children)) {
       for (const ch of node.children) {
-        if (search(ch, [...path, node])) return true;
+        if (visit(ch, [...path, node])) return true;
       }
     }
     return false;
-  }
-  if (Array.isArray(tax)) {
-    for (const root of tax) {
-      if (search(root, [])) break;
-    }
-  } else {
-    search(tax, []);
-  }
+  };
+
+  for (const root of tax) { if (visit(root, [])) break; }
   return foundPath;
 }
 
