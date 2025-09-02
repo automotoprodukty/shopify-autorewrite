@@ -196,6 +196,37 @@ function getBranchBySlug(brandName, nodeSlug) {
   return found || [];
 }
 
+// --- Find brand root and an immediate child node by name or node_slug
+function findBrandRoot(brandName){
+  const tax = loadTaxonomia();
+  if (!tax?.length || !brandName) return null;
+  const norm = (s)=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  return tax.find(r => norm(r.name||r.title) === norm(brandName)) || null;
+}
+function findBrandChildNode(brandName, childNameOrSlug){
+  const root = findBrandRoot(brandName);
+  if (!root || !childNameOrSlug) return null;
+  const norm = (s)=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const want = norm(childNameOrSlug);
+  const kids = Array.isArray(root.children) ? root.children : [];
+  return kids.find(ch => norm(ch.node_slug||"")===want || norm(ch.name||ch.title)===want) || null;
+}
+// --- Collect all leaves under a specific node (subtree)
+function getLeavesUnderNode(node){
+  if (!node) return [];
+  const leaves = [];
+  (function walk(n, path=[]) {
+    const kids = Array.isArray(n.children) ? n.children : [];
+    const me = { ...n, path: [...path, (n.name||n.title)] };
+    if (!kids.length) {
+      if (me.node_slug) leaves.push(me);
+    } else {
+      kids.forEach(ch => walk(ch, me.path));
+    }
+  })(node, []);
+  return leaves;
+}
+
 // --- Lightweight AI call to pick collection slugs from whitelist
 async function aiPickCollectionSlugs({ title, vendor, tags, description, allowedLeaves }) {
   const sys = `ÚLOHA: Vyber presne tie node_slug(y) z poskytnutého zoznamu, ktoré najlepšie zodpovedajú produktu.
@@ -843,19 +874,17 @@ CIEĽ: Vráť JSON s kľúčmi:
       return normalizeSimple([p.title, p.descriptionHtml, ...(p.tags||[])].join(" "));
     }
     // Try to infer a more specific leaf by matching product text with tokens derived from node_slug
-    function autoRefineSlugPicks(slugs, brand, p){
+    function autoRefineSlugPicks(slugs, brand, p, leavesWhitelist){
       const text = buildTextForMatch(p);
-      const leaves = getBrandLeaves(brand); // [{node_slug,...}]
+      const leaves = Array.isArray(leavesWhitelist) ? leavesWhitelist : getBrandLeaves(brand); // [{node_slug,...}]
       // if AI chose exactly one slug and it's NOT 'ine', keep it
       if (Array.isArray(slugs) && slugs.length === 1 && normalizeSimple(slugs[0]) !== "ine") return slugs;
-      // scoring by presence of slug tokens in product text
       let bestSlug = null; 
       let bestScore = 0;
       for (const leaf of leaves){
         const slug = String(leaf.node_slug||"");
         if (!slug) continue;
         const parts = slug.split(/[-_ ]+/).map(normalizeSimple).filter(Boolean);
-        // simple stemming: volanty -> volant
         const stems = new Set(parts.map(t => t.replace(/y$/,"")));
         let score = 0;
         for (const t of stems){
@@ -877,7 +906,28 @@ CIEĽ: Vráť JSON s kľúčmi:
     let slugPicks = [];
     const detectedBrand = detectBrandFromProduct(p, out);
     if (detectedBrand) {
-      const leaves = getBrandLeaves(detectedBrand); // whitelist
+      // Try to infer preferred top-level subtree from AI collections like "AUDI Interiér", "AUDI Exteriér", etc.
+      let preferredArea = null; // e.g. "interier" | "exterier" | "komponenty" ...
+      if (Array.isArray(out?.collections)) {
+        const norm = (s)=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+        for (const c of out.collections) {
+          const s = norm(c);
+          // look for patterns "<brand> <area>"
+          if (s.includes(norm(detectedBrand))) {
+            const parts = s.split(" ");
+            const idx = parts.indexOf(norm(detectedBrand));
+            const next = parts[idx+1] || ""; // e.g. "interiér"
+            if (next) { preferredArea = next; break; }
+          }
+        }
+      }
+      let leaves;
+      if (preferredArea) {
+        const topNode = findBrandChildNode(detectedBrand, preferredArea);
+        leaves = topNode ? getLeavesUnderNode(topNode) : getBrandLeaves(detectedBrand);
+      } else {
+        leaves = getBrandLeaves(detectedBrand);
+      }
       const allowed = leaves.map(x => ({ slug: x.node_slug, label: x.path ? x.path.join(" → ") : (x.name||x.title) }))
                             .filter(x => x.slug);
       try {
@@ -886,7 +936,7 @@ CIEĽ: Vráť JSON s kľúčmi:
         });
         slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
         console.log("AI slug picks =>", slugPicks);
-        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p);
+        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p, leaves);
         console.log("Slug picks after auto-refine =>", slugPicks);
       } catch (e) {
         console.warn("AI slug-pick failed:", e?.message || e);
