@@ -718,7 +718,7 @@ async function restSetSubCollections(parentId, childIds = []) {
     "custom",
     "sub_collections",
     "list.collection_reference",
-    JSON.stringify(childIds)
+    JSON.stringify(childIds.map(id => `gid://shopify/Collection/${id}`))
   );
 }
 
@@ -835,6 +835,44 @@ CIEĽ: Vráť JSON s kľúčmi:
     // --- DIAGNOSTICS: log AI collections & provide safe fallback ---
     console.log("AI collections =>", out?.collections);
 
+    // --- Deterministic auto-refine of slug picks (no manual hints)
+    function normalizeSimple(s){ 
+      return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""); 
+    }
+    function buildTextForMatch(p){
+      return normalizeSimple([p.title, p.descriptionHtml, ...(p.tags||[])].join(" "));
+    }
+    // Try to infer a more specific leaf by matching product text with tokens derived from node_slug
+    function autoRefineSlugPicks(slugs, brand, p){
+      const text = buildTextForMatch(p);
+      const leaves = getBrandLeaves(brand); // [{node_slug,...}]
+      // if AI chose exactly one slug and it's NOT 'ine', keep it
+      if (Array.isArray(slugs) && slugs.length === 1 && normalizeSimple(slugs[0]) !== "ine") return slugs;
+      // scoring by presence of slug tokens in product text
+      let bestSlug = null; 
+      let bestScore = 0;
+      for (const leaf of leaves){
+        const slug = String(leaf.node_slug||"");
+        if (!slug) continue;
+        const parts = slug.split(/[-_ ]+/).map(normalizeSimple).filter(Boolean);
+        // simple stemming: volanty -> volant
+        const stems = new Set(parts.map(t => t.replace(/y$/,"")));
+        let score = 0;
+        for (const t of stems){
+          if (!t) continue;
+          if (text.includes(t)) score++;
+        }
+        if (score > bestScore){
+          bestScore = score;
+          bestSlug = slug;
+        }
+      }
+      if (bestScore > 0 && bestSlug){
+        return [bestSlug];
+      }
+      return slugs || [];
+    }
+
     // --- Slug-only classification (branch whitelist)
     let slugPicks = [];
     const detectedBrand = detectBrandFromProduct(p, out);
@@ -848,6 +886,8 @@ CIEĽ: Vráť JSON s kľúčmi:
         });
         slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
         console.log("AI slug picks =>", slugPicks);
+        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p);
+        console.log("Slug picks after auto-refine =>", slugPicks);
       } catch (e) {
         console.warn("AI slug-pick failed:", e?.message || e);
       }
