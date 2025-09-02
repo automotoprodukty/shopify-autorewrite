@@ -678,8 +678,20 @@ CIEĽ: Vráť JSON s kľúčmi:
       for (const leafColTitle of out.collections) {
         const leafTitle = String(leafColTitle).trim();
         if (!leafTitle) continue;
+
+        // Diagnostics: what leaf we were asked to process
+        console.log("COLL: requested leaf =", leafTitle);
+
         // Get taxonomy branch (all ancestors to root) as nodes
         const branchNodes = getTaxonomyBranchNodesFromLeaf(leafTitle);
+        console.log("TAXO BRANCH =>", leafTitle, "=>", branchNodes.map(n => n.name));
+
+        // If taxonomy doesn't contain this leaf, skip gracefully (prevents creating wrong collections)
+        if (!Array.isArray(branchNodes) || branchNodes.length === 0) {
+          console.warn("TAXO: no branch found in taxonomia.json for:", leafTitle, "-> skip ensure/attach");
+          continue;
+        }
+
         for (const node of branchNodes) {
           const collTitle = node.name;
           if (!collTitle) continue;
