@@ -228,7 +228,7 @@ function getLeavesUnderNode(node){
 }
 
 // --- Lightweight AI call to pick collection slugs from whitelist
-async function aiPickCollectionSlugs({ title, vendor, tags, description, allowedLeaves }) {
+async function aiPickCollectionSlugs({ title, vendor, tags, description, allowedLeaves, taxonomyTree }) {
   const sys = `ÚLOHA: Vyber presne tie node_slug(y) z poskytnutého zoznamu, ktoré najlepšie zodpovedajú produktu.
 - Vráť len JSON {"collections_node_slugs":[...]}.
 - Používaj IBA node_slug z whitelistu. Ak si neistý, vráť prázdne pole.
@@ -238,7 +238,8 @@ async function aiPickCollectionSlugs({ title, vendor, tags, description, allowed
       title, vendor, tags: (tags||[]).slice(0,20),
       description: String(description||"").slice(0,2000)
     },
-    allowed_leaves: Array.isArray(allowedLeaves) ? allowedLeaves : [] // [{slug,label}]
+    allowed_leaves: Array.isArray(allowedLeaves) ? allowedLeaves : [], // [{slug,label}]
+    taxonomy_tree: taxonomyTree
   };
   const body = {
     model: "gpt-4o-mini",
@@ -932,7 +933,12 @@ CIEĽ: Vráť JSON s kľúčmi:
                             .filter(x => x.slug);
       try {
         const cls = await aiPickCollectionSlugs({
-          title: p.title, vendor: p.vendor, tags: p.tags, description: p.descriptionHtml, allowedLeaves: allowed
+          title: p.title,
+          vendor: p.vendor,
+          tags: p.tags,
+          description: p.descriptionHtml,
+          allowedLeaves: allowed,
+          taxonomyTree: loadTaxonomia()
         });
         slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
         console.log("AI slug picks =>", slugPicks);
