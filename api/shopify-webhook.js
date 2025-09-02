@@ -522,6 +522,7 @@ async function restSearchFilesByFilename(filename) {
   return list;
 }
 
+
 async function findImageUrlForNodeSlug(node_slug) {
   const candidates = [];
   if (node_slug) {
@@ -534,6 +535,97 @@ async function findImageUrlForNodeSlug(node_slug) {
     if (hit?.url) return hit.url; // CDN URL
   }
   return null;
+}
+
+// --- Metafields (REST) for Custom Collections
+async function restUpsertCollectionMetafield(collectionId, namespace, key, type, value) {
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/metafields.json`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      metafield: {
+        namespace,
+        key,
+        type,
+        value,
+        owner_resource: "collection",
+        owner_id: collectionId
+      }
+    })
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    console.warn(`Metafield upsert failed for collection ${collectionId} ${namespace}.${key}: ${r.status} ${t}`);
+  }
+}
+
+async function setCollectionTaxonomyFields(nodesEnsured) {
+  // nodesEnsured: [{ id, title, node_slug, facets, level, parentId, childId }]
+  for (const n of nodesEnsured) {
+    await restUpsertCollectionMetafield(n.id, "taxonomy", "level", "number_integer", String(n.level));
+    if (n.parentId) await restUpsertCollectionMetafield(n.id, "taxonomy", "parent", "number_integer", String(n.parentId));
+    const childrenStr = n.childId ? JSON.stringify([n.childId]) : JSON.stringify([]);
+    await restUpsertCollectionMetafield(n.id, "taxonomy", "children", "json", childrenStr);
+    if (n.node_slug) await restUpsertCollectionMetafield(n.id, "taxonomy", "node_slug", "single_line_text_field", n.node_slug);
+    if (Array.isArray(n.facets) && n.facets.length) {
+      await restUpsertCollectionMetafield(n.id, "taxonomy", "facets", "list.single_line_text_field", JSON.stringify(n.facets));
+    }
+  }
+}
+
+// Ensure whole branch (create missing), set images if absent, then write taxonomy metafields
+async function ensureBranchAndTaxonomy(branchNodes) {
+  const ensured = [];
+  for (let i = 0; i < branchNodes.length; i++) {
+    const node = branchNodes[i];
+    const title = node.name || node.title;
+    const coll = await restEnsureCustomCollection(title);
+
+    // Assign image once (only if missing)
+    try {
+      const full = await restGetCustomCollection(coll.id);
+      if (!full?.image?.src) {
+        const fileUrl = await findImageUrlForNodeSlug(node.node_slug);
+        if (fileUrl) {
+          const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${coll.id}.json`;
+          await fetch(url, {
+            method: "PUT",
+            headers: {
+              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ custom_collection: { id: coll.id, image: { src: fileUrl } } })
+          });
+          console.log("Collection image set:", title, "<=", fileUrl);
+        } else {
+          console.log("Collection image missing (no matching file):", title, "node_slug=", node.node_slug);
+        }
+      }
+    } catch (e) {
+      console.warn("Image assign failed for", title, e?.message || e);
+    }
+
+    ensured.push({
+      id: coll.id,
+      title,
+      node_slug: node.node_slug,
+      facets: node.facets,
+      level: i,
+      parentId: null, // to be filled next pass
+      childId: null
+    });
+  }
+  // link parents/children (linear branch)
+  for (let i = 0; i < ensured.length; i++) {
+    ensured[i].parentId = i > 0 ? ensured[i - 1].id : null;
+    ensured[i].childId = i < ensured.length - 1 ? ensured[i + 1].id : null;
+  }
+  await setCollectionTaxonomyFields(ensured);
+  return ensured;
 }
 
 export default async function handler(req, res) {
@@ -728,51 +820,14 @@ CIEĽ: Vráť JSON s kľúčmi:
           continue;
         }
 
-        for (const node of branchNodes) {
-          const collTitle = node.name;
-          if (!collTitle) continue;
-          try {
-            // Ensure collection exists (create if missing)
-            const coll = await restEnsureCustomCollection(collTitle);
-            // --- Assign image to collection (stricter: only if not already set) ---
-            try {
-              // Fetch latest collection data (with image)
-              const full = await restGetCustomCollection(coll.id);
-              if (!full?.image?.src) {
-                if (node.node_slug) {
-                  const fileUrl = await findImageUrlForNodeSlug(node.node_slug);
-                  if (fileUrl) {
-                    const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${coll.id}.json`;
-                    await fetch(url, {
-                      method: "PUT",
-                      headers: {
-                        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-                        "Content-Type": "application/json"
-                      },
-                      body: JSON.stringify({
-                        custom_collection: {
-                          id: coll.id,
-                          image: { src: fileUrl }
-                        }
-                      })
-                    });
-                  }
-                }
-              }
-              // else: image is already set, skip
-            } catch (imgErr) {
-              // Ignore image errors, continue
-              //console.warn("Collection image assign error", collTitle, imgErr?.message || imgErr);
-            }
-            // Ensure product is in collection (collect)
-            const exists = await restCollectExists(productNumericId, coll.id);
-            if (!exists) {
-              await restCreateCollect(productNumericId, coll.id);
-            }
-          } catch (err) {
-            console.error("Collection ensure/attach error:", collTitle, err?.message || err);
-            // continue to next
-          }
+        // Ensure whole branch first (ids + taxonomy metafields + images)
+        const ensured = await ensureBranchAndTaxonomy(branchNodes);
+        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
+
+        // Attach product to every node in the branch (leaf + ancestors)
+        for (const n of ensured) {
+          const exists = await restCollectExists(productNumericId, n.id);
+          if (!exists) await restCreateCollect(productNumericId, n.id);
         }
       }
     }
