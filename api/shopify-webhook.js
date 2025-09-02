@@ -740,16 +740,58 @@ CIEĽ: Vráť JSON s kľúčmi:
       if (t.includes("pneumatiky"))            return `${B} Pneumatiky`;
       if (t.includes("olej"))                  return `${B} Olej`;
 
+      // Heuristiky pre interiér/exteriér a komponenty
+      if (t.some(x => /(interier|interiér)/.test(x))) return `${B} Interiér`;
+      if (t.some(x => /(exterier|exteriér)/.test(x))) return `${B} Exteriér`;
+      if (t.includes("komponenty"))              return `${B} Komponenty`;
+
       return `${B} Komponenty`;
     }
 
     if (!Array.isArray(out?.collections) || out.collections.length === 0) {
-        const tagsFromBody = body?.tags || body?.product?.tags || [];
-        const guess = deriveLeafFromTags(tagsFromBody);
-        if (guess) {
-            out.collections = [guess];
-            console.warn("AI returned no collections -> using TAG fallback:", out.collections);
+      const tagsFromBody = body?.tags || body?.product?.tags || [];
+      const guess = deriveLeafFromTags(tagsFromBody);
+      if (guess) {
+        const branch = getTaxonomyBranchNodesFromLeaf(guess);
+        if (branch.length) {
+          out.collections = [guess];
+          console.warn("TAG fallback (validated by taxonomy):", out.collections);
+        } else {
+          console.warn("TAG fallback guess not in taxonomy -> ignored:", guess);
         }
+      }
+    }
+
+    // If still empty, try building from AI base_tags/subtags
+    if (!Array.isArray(out?.collections) || out.collections.length === 0) {
+      const candidates = new Set();
+      const sub = Array.isArray(out?.subtags) ? out.subtags : [];
+      const base = Array.isArray(out?.base_tags) ? out.base_tags : [];
+
+      // 1) Any subtag that maps to a taxonomy leaf
+      for (const s of sub) {
+        const leaf = String(s || "").trim();
+        if (!leaf) continue;
+        const branch = getTaxonomyBranchNodesFromLeaf(leaf);
+        if (branch.length) candidates.add(leaf);
+      }
+
+      // 2) Combine Brand x Category from base tags
+      const categories = ["Interiér","Exteriér","Komponenty","Brzdy","Pneumatiky","Olej","Doplnky","Oblečenie","Starostlivosť o auto","Vychytávky"];
+      const brands = base.filter(b => /[a-z]/i.test(b) && !categories.includes(b));
+      const cats = base.filter(c => categories.includes(c));
+      for (const b of brands) {
+        for (const c of cats) {
+          const leaf = `${b} ${c}`.trim();
+          const branch = getTaxonomyBranchNodesFromLeaf(leaf);
+          if (branch.length) candidates.add(leaf);
+        }
+      }
+
+      if (candidates.size) {
+        out.collections = Array.from(candidates);
+        console.warn("Derived collections from AI tags:", out.collections);
+      }
     }
 
     // --- Guard: ak je produkt univerzálny alebo multi-brand, nespúšťaj značkové vetvy
@@ -765,9 +807,18 @@ CIEĽ: Vráť JSON s kľúčmi:
     const isUniversal = allTagsNow.includes(normTag("Univerzálny"));
 
     if (isUniversal || brandHits.size !== 1) {
-    console.warn("UNIVERSAL/MULTI-BRAND detected -> skipping brand taxonomy ensure/attach");
-    // odfiltruj brandové kolekcie (začínajú veľkým BRAND slovom)
-    out.collections = (out.collections || []).filter(c => !/^[A-ZÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ]+\s/.test(c));
+      console.warn("UNIVERSAL/MULTI-BRAND detected -> skipping brand taxonomy ensure/attach");
+      // odfiltruj brandové kolekcie (začínajú veľkým BRAND slovom)
+      out.collections = (out.collections || []).filter(c => !/^[A-ZÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ]+\s/.test(c));
+    }
+
+    // --- Final safety: keep only collections that exist in taxonomy
+    if (Array.isArray(out.collections)) {
+      const before = [...out.collections];
+      out.collections = out.collections.filter(c => getTaxonomyBranchNodesFromLeaf(String(c).trim()).length > 0);
+      if (before.length !== out.collections.length) {
+        console.warn("Filtered non-taxonomy collections:", before.filter(c => !out.collections.includes(c)));
+      }
     }
 
     // --- 1) Update základných polí + názvy optionov
