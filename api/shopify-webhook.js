@@ -547,6 +547,48 @@ CIEĽ: Vráť JSON s kľúčmi:
 `;
 
     const out = await openAIRewrite(prompt);
+    
+    // --- DIAGNOSTICS: log AI collections & provide safe fallback ---
+    console.log("AI collections =>", out?.collections);
+
+    // Simple tag-based fallback helper (brand + základné kľúčové slová)
+    function deriveLeafFromTags(tags = []) {
+      const t = (Array.isArray(tags) ? tags : [])
+        .map(x => String(x || "").toLowerCase());
+
+      const brands = ["audi","bmw","mercedes-benz","mercedes","škoda","skoda","volkswagen","vw"];
+      const brand = brands.find(b => t.includes(b));
+      if (!brand) return null;
+
+      // Normalizácia brandu na zápis v taxonómii
+      let B = brand.toUpperCase();
+      if (B === "SKODA") B = "ŠKODA";
+      if (B === "VW") B = "VOLKSWAGEN";
+      if (B === "MERCEDES") B = "MERCEDES-BENZ";
+
+      // Heuristiky na pár najčastejších uzlov
+      if (t.some(x => /platn(i|í)cky/.test(x))) return `${B} Brzdové platničky`;
+      if (t.some(x => /kot(u|ú)c/.test(x)))    return `${B} Brzdový kotúč`;
+      if (t.includes("brzdy"))                 return `${B} Brzdy`;
+      if (t.includes("pneumatiky"))            return `${B} Pneumatiky`;
+      if (t.includes("olej"))                  return `${B} Olej`;
+
+      return `${B} Komponenty`;
+    }
+
+    if (!Array.isArray(out?.collections) || out.collections.length === 0) {
+      // 1) Skús odvodiť z tagov v webhook payload-e
+      const tagsFromBody = body?.tags || body?.product?.tags || [];
+      const guess = deriveLeafFromTags(tagsFromBody);
+      if (guess) {
+        out.collections = [guess];
+        console.warn("AI returned no collections -> using TAG fallback:", out.collections);
+      } else {
+        // 2) Dočasný fallback pre testovanie (zmaž po overení)
+        out.collections = ["AUDI Brzdové platničky"];
+        console.warn("AI returned no collections -> using TEMP fallback:", out.collections);
+      }
+    }
 
     // --- 1) Update základných polí + názvy optionov
     const tags = [
