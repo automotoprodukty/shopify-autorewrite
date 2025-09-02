@@ -326,7 +326,31 @@ async function metafieldsSet(ownerId) {
   );
 }
 
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- Simple Shopify API rate limiter & retry (handles 429)
+let __lastShopifyCallAt = 0;
+async function rateLimit(minIntervalMs = 600) { // ~2 calls/sec hard limit
+  const now = Date.now();
+  const wait = Math.max(0, minIntervalMs - (now - __lastShopifyCallAt));
+  if (wait) await sleep(wait);
+  __lastShopifyCallAt = Date.now();
+}
+
+async function fetchWithRetry(url, opts = {}, retries = 3) {
+  let attempt = 0;
+  while (true) {
+    await rateLimit();
+    const res = await fetch(url, opts);
+    if (res.status !== 429) return res;
+    if (attempt >= retries) return res; // give up, caller will handle
+    const backoff = 500 * (attempt + 1);
+    console.warn(`429 rate limit on ${url} -> retrying in ${backoff}ms (attempt ${attempt + 1}/${retries})`);
+    await sleep(backoff);
+    attempt++;
+  }
+}
 
 async function waitForProduct(id, attempts = 12, delayMs = 1500) {
   for (let i = 0; i < attempts; i++) {
@@ -437,7 +461,7 @@ function normalizeForMatch(raw) {
 async function restFindCustomCollectionByTitle(title) {
   const want = normalizeForMatch(title);
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json?limit=250`;
-  const r = await fetch(url, {
+  const r = await fetchWithRetry(url, {
     headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
   });
   if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
@@ -453,7 +477,7 @@ async function restFindCustomCollectionByTitle(title) {
 
 async function restCreateCustomCollection(title) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json`;
-  const r = await fetch(url, {
+  const r = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
@@ -475,7 +499,7 @@ async function restEnsureCustomCollection(title) {
 // --- Helper: Get custom collection by ID, including image and title
 async function restGetCustomCollection(collectionId) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${collectionId}.json?fields=id,image,title`;
-  const r = await fetch(url, {
+  const r = await fetchWithRetry(url, {
     headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
   });
   if (r.status === 404) return null;
@@ -486,7 +510,7 @@ async function restGetCustomCollection(collectionId) {
 
 async function restCollectExists(productId, collectionId) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json?product_id=${productId}&collection_id=${collectionId}&limit=1`;
-  const r = await fetch(url, {
+  const r = await fetchWithRetry(url, {
     headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
   });
   if (!r.ok) throw new Error(`REST get collects failed: ${r.status} ${await r.text()}`);
@@ -496,7 +520,8 @@ async function restCollectExists(productId, collectionId) {
 
 async function restCreateCollect(productId, collectionId) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json`;
-  const r = await fetch(url, {
+  await rateLimit();
+  const r = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
@@ -504,6 +529,14 @@ async function restCreateCollect(productId, collectionId) {
     },
     body: JSON.stringify({ collect: { product_id: productId, collection_id: collectionId } })
   });
+  if (r.status === 422) {
+    // Likely already collected; ignore to save one GET and avoid rate hits
+    const t = await r.text();
+    if (/already|exists|has already been taken/i.test(t)) {
+      console.warn(`Collect already exists (skipping): product ${productId} -> collection ${collectionId}`);
+      return null;
+    }
+  }
   if (!r.ok) throw new Error(`REST create collect failed: ${r.status} ${await r.text()}`);
   const j = await r.json();
   return j.collect;
@@ -515,7 +548,7 @@ async function restSearchFilesByFilename(filename) {
   // Docs: GET /admin/api/{version}/files.json?query=filename:<name>
   const q = `filename:${filename}`;
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/files.json?query=${encodeURIComponent(q)}&limit=5`;
-  const r = await fetch(url, { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }});
+  const r = await fetchWithRetry(url, { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }});
   if (!r.ok) throw new Error(`REST files search failed: ${r.status} ${await r.text()}`);
   const j = await r.json();
   const list = Array.isArray(j.files) ? j.files : [];
@@ -539,8 +572,9 @@ async function findImageUrlForNodeSlug(node_slug) {
 
 // --- Metafields (REST) for Custom Collections
 async function restUpsertCollectionMetafield(collectionId, namespace, key, type, value) {
+  await rateLimit();
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/metafields.json`;
-  const r = await fetch(url, {
+  const r = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
@@ -826,8 +860,8 @@ CIEĽ: Vráť JSON s kľúčmi:
 
         // Attach product to every node in the branch (leaf + ancestors)
         for (const n of ensured) {
-          const exists = await restCollectExists(productNumericId, n.id);
-          if (!exists) await restCreateCollect(productNumericId, n.id);
+          // Try to create; if it already exists, the 422 is ignored inside helper
+          await restCreateCollect(productNumericId, n.id);
         }
       }
     }
