@@ -708,9 +708,11 @@ async function findImageUrlForNodeSlug(node_slug) {
 
   // A) Prefer external GitHub/CDN base when provided
   if (base) {
+    console.log("IMG: using external base", base, "slug=", node_slug);
     if (node_slug) {
       for (const ext of exts) {
         const url = `${base}${node_slug}.${ext}`;
+        console.log("IMG try:", url);
         if (await httpHeadOk(url)) return url;
       }
     }
@@ -719,13 +721,16 @@ async function findImageUrlForNodeSlug(node_slug) {
     const defCandidates = [defName, ...exts.map((e) => `default.${e}`)];
     for (const n of defCandidates) {
       const url = `${base}${n}`;
+      console.log("IMG try fallback:", url);
       if (await httpHeadOk(url)) return url;
     }
+    console.warn("IMG: no match under external base, returning null");
     // when external base is set, do not try Shopify Files
     return null;
   }
 
   // B) Fallback to Shopify Files search when no external base is configured
+  console.log("IMG: external base not set; falling back to Shopify Files", node_slug);
   const candidates = [];
   if (node_slug) {
     for (const ext of exts) candidates.push(`${node_slug}.${ext}`);
@@ -914,23 +919,58 @@ CIEĽ: Vráť JSON s kľúčmi:
     function buildTextForMatch(p){
       return normalizeSimple([p.title, p.descriptionHtml, ...(p.tags||[])].join(" "));
     }
+    // Deterministic keyword → slug map for the most obvious cases (kept tiny on purpose)
+    const KEYWORD_TO_SLUG = {
+      "volanty": ["volant", "steering wheel"],
+      // add more high-signal pairs later if needed
+    };
     // Try to infer a more specific leaf by matching product text with tokens derived from node_slug
     function autoRefineSlugPicks(slugs, brand, p, leavesWhitelist){
       const text = buildTextForMatch(p);
-      const leaves = Array.isArray(leavesWhitelist) ? leavesWhitelist : getBrandLeaves(brand); // [{node_slug,...}]
-      // if AI chose exactly one slug and it's NOT 'ine', keep it
-      if (Array.isArray(slugs) && slugs.length === 1 && normalizeSimple(slugs[0]) !== "ine") return slugs;
-      let bestSlug = null; 
+      const leaves = Array.isArray(leavesWhitelist) ? leavesWhitelist : getBrandLeaves(brand);
+
+      // 1) Respect AI if it picked any non-generic slug(s)
+      const norm = (s)=>normalizeSimple(s);
+      const cleaned = (Array.isArray(slugs) ? slugs : [])
+        .map(s => String(s||""))
+        .filter(Boolean);
+      const nonGeneric = cleaned.filter(s => norm(s) !== "ine");
+      if (nonGeneric.length) {
+        const seen = new Set();
+        const unique = nonGeneric.filter(s => (seen.has(s) ? false : (seen.add(s), true)));
+        return unique;
+      }
+
+      // 2) Try deterministic keyword → slug within whitelist
+      const lowers = text;
+      const whitelistSet = new Set(leaves.map(l => String(l.node_slug||"")));
+      for (const [slug, kws] of Object.entries(KEYWORD_TO_SLUG)) {
+        if (!whitelistSet.has(slug)) continue; // respect subtree
+        if (kws.some(kw => lowers.includes(normalizeSimple(kw)))) {
+          return [slug];
+        }
+      }
+
+      // 3) Token scoring within whitelist (avoid generic noise)
+      const STOP = new Set(["a","na","do","pre","pod","nad","pri","po","z","s","bez","auto","ine","ostatne","material","drobny","drobne","autopoistky","karoseria","ochrana"]);
+      let bestSlug = null;
       let bestScore = 0;
+      const wordBoundaryMatch = (token) => {
+        try {
+          const re = new RegExp(`\\b${token}\\w*\\b`, "g");
+          const m = text.match(re);
+          return m ? m.length : 0;
+        } catch { return 0; }
+      };
+
       for (const leaf of leaves){
         const slug = String(leaf.node_slug||"");
         if (!slug) continue;
-        const parts = slug.split(/[-_ ]+/).map(normalizeSimple).filter(Boolean);
-        const stems = new Set(parts.map(t => t.replace(/y$/,"")));
+        const parts = slug.split(/[-_ ]+/).map(normalizeSimple).filter(t => t && t.length >= 4 && !STOP.has(t));
+        if (!parts.length) continue;
         let score = 0;
-        for (const t of stems){
-          if (!t) continue;
-          if (text.includes(t)) score++;
+        for (const t of parts){
+          score += wordBoundaryMatch(t);
         }
         if (score > bestScore){
           bestScore = score;
@@ -940,7 +980,7 @@ CIEĽ: Vráť JSON s kľúčmi:
       if (bestScore > 0 && bestSlug){
         return [bestSlug];
       }
-      return slugs || [];
+      return cleaned; // give back whatever came (likely ["ine"]) so caller can decide
     }
 
     // --- Slug-only classification (branch whitelist)
