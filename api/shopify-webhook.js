@@ -687,11 +687,15 @@ async function restSearchFilesByFilename(filename) {
 }
 
 
-// Helper: Check if a URL exists via HEAD request, rate-limited
+// Helper: Check if a URL exists via HEAD request, rate-limited, with fallback to GET if HEAD fails
 async function httpHeadOk(url) {
   try {
     await rateLimit();
-    const res = await fetch(url, { method: "HEAD" });
+    // Try HEAD first
+    let res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    if (res.ok) return true;
+    // Some CDNs (or raw.githubusercontent) can be picky about HEAD; try a quick GET without reading the body
+    res = await fetch(url, { method: "GET", redirect: "follow" });
     return res.ok;
   } catch {
     return false;
@@ -704,27 +708,46 @@ async function findImageUrlForNodeSlug(node_slug) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const base = process.env.COLLECTION_IMAGE_BASE || ""; // e.g. https://raw.githubusercontent.com/.../collections%20img/
+  const base = process.env.COLLECTION_IMAGE_BASE || "";
+  // If base is raw.githubusercontent.com, also prepare a jsDelivr fallback
+  let fallbackBase = "";
+  try {
+    if (base.includes("raw.githubusercontent.com")) {
+      // Example raw: https://raw.githubusercontent.com/<owner>/<repo>/<branch>/collections%20img/
+      // jsDelivr:      https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/collections%20img/
+      const parts = base.split("raw.githubusercontent.com/")[1]; // "<owner>/<repo>/<branch>/path/"
+      if (parts) {
+        const seg = parts.split("/");
+        const owner = seg[0], repo = seg[1], branch = seg[2];
+        const pathRest = seg.slice(3).join("/");
+        fallbackBase = `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${pathRest}`;
+      }
+    }
+  } catch {}
 
   // A) Prefer external GitHub/CDN base when provided
   if (base) {
-    console.log("IMG: using external base", base, "slug=", node_slug);
-    if (node_slug) {
-      for (const ext of exts) {
-        const url = `${base}${node_slug}.${ext}`;
-        console.log("IMG try:", url);
+    console.log("IMG BASE:", base, "slug=", node_slug);
+    const basesToTry = [base, fallbackBase].filter(Boolean);
+    for (const b of basesToTry) {
+      if (b !== base) console.log("IMG FALLBACK BASE:", b);
+      if (node_slug) {
+        for (const ext of exts) {
+          const url = `${b}${node_slug}.${ext}`;
+          console.log("IMG try:", url);
+          if (await httpHeadOk(url)) return url;
+        }
+      }
+      // fallback to default image(s)
+      const defName = process.env.COLLECTION_IMAGE_DEFAULT || "default.png";
+      const defCandidates = [defName, ...exts.map((e) => `default.${e}`)];
+      for (const n of defCandidates) {
+        const url = `${b}${n}`;
+        console.log("IMG try fallback:", url);
         if (await httpHeadOk(url)) return url;
       }
     }
-    // fallback to default image(s)
-    const defName = process.env.COLLECTION_IMAGE_DEFAULT || "default.png";
-    const defCandidates = [defName, ...exts.map((e) => `default.${e}`)];
-    for (const n of defCandidates) {
-      const url = `${base}${n}`;
-      console.log("IMG try fallback:", url);
-      if (await httpHeadOk(url)) return url;
-    }
-    console.warn("IMG: no match under external base, returning null");
+    console.warn("IMG: no match under external base(s), returning null");
     // when external base is set, do not try Shopify Files
     return null;
   }
