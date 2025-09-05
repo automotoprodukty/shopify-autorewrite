@@ -708,7 +708,8 @@ async function findImageUrlForNodeSlug(node_slug) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const base = process.env.COLLECTION_IMAGE_BASE || "";
+  const base = (process.env.COLLECTION_IMAGE_BASE || "https://cdn.jsdelivr.net/gh/automotoprodukty/shopify-autorewrite@main/collections%20img/").trim();
+  console.log("IMG BASE:", base);
   // If base is raw.githubusercontent.com, also prepare a jsDelivr fallback
   let fallbackBase = "";
   try {
