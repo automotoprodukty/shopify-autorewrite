@@ -687,16 +687,56 @@ async function restSearchFilesByFilename(filename) {
 }
 
 
+// Helper: Check if a URL exists via HEAD request, rate-limited
+async function httpHeadOk(url) {
+  try {
+    await rateLimit();
+    const res = await fetch(url, { method: "HEAD" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function findImageUrlForNodeSlug(node_slug) {
+  const exts = (process.env.COLLECTION_IMAGE_EXTS || "png,jpg,jpeg,webp")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const base = process.env.COLLECTION_IMAGE_BASE || ""; // e.g. https://raw.githubusercontent.com/.../collections%20img/
+
+  // A) Prefer external GitHub/CDN base when provided
+  if (base) {
+    if (node_slug) {
+      for (const ext of exts) {
+        const url = `${base}${node_slug}.${ext}`;
+        if (await httpHeadOk(url)) return url;
+      }
+    }
+    // fallback to default image(s)
+    const defName = process.env.COLLECTION_IMAGE_DEFAULT || "default.png";
+    const defCandidates = [defName, ...exts.map((e) => `default.${e}`)];
+    for (const n of defCandidates) {
+      const url = `${base}${n}`;
+      if (await httpHeadOk(url)) return url;
+    }
+    // when external base is set, do not try Shopify Files
+    return null;
+  }
+
+  // B) Fallback to Shopify Files search when no external base is configured
   const candidates = [];
   if (node_slug) {
-    candidates.push(`${node_slug}.png`, `${node_slug}.jpg`, `${node_slug}.jpeg`, `${node_slug}.webp`);
+    for (const ext of exts) candidates.push(`${node_slug}.${ext}`);
   }
-  candidates.push("default.png", "default.jpg", "default.jpeg", "default.webp");
+  const defCandidates = [process.env.COLLECTION_IMAGE_DEFAULT || "default.png", ...exts.map((e) => `default.${e}`)];
+  candidates.push(...defCandidates);
+
   for (const name of candidates) {
     const files = await restSearchFilesByFilename(name);
-    const hit = files.find(f => (f?.filename || "").toLowerCase() === name.toLowerCase());
-    if (hit?.url) return hit.url; // CDN URL
+    const hit = files.find((f) => (f?.filename || "").toLowerCase() === name.toLowerCase());
+    if (hit?.url) return hit.url; // Shopify CDN URL
   }
   return null;
 }
