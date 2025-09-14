@@ -586,19 +586,80 @@ function normalizeForMatch(raw) {
 // ---- Collections helpers (REST)
 async function restFindCustomCollectionByTitle(title) {
   const want = normalizeForMatch(title);
-  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json?limit=250`;
-  const r = await fetchWithRetry(url, {
-    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
-  });
-  if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
-  const j = await r.json();
-  const list = Array.isArray(j.custom_collections) ? j.custom_collections : [];
-  // try exact normalized match first
-  let found = list.find(c => normalizeForMatch(c.title) === want);
-  if (found) return found;
-  // fallback: startsWith (useful when kolekcie majú prefix/sufix)
-  found = list.find(c => normalizeForMatch(c.title).startsWith(want));
-  return found || null;
+  const baseUrl = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json`;
+
+  // Helper: parse RFC5988 Link header for rel="next"
+  function parseNextPageInfo(res) {
+    const link = res.headers.get("link") || res.headers.get("Link");
+    if (!link) return null;
+    // Example: <https://shop.myshopify.com/admin/api/2025-07/custom_collections.json?limit=250&amp;page_info=XYZ>; rel="next"
+    const parts = link.split(",");
+    for (const p of parts) {
+      if (/\brel="?next"?/.test(p)) {
+        const m = p.match(/<([^>]+)>/);
+        if (m && m[1]) {
+          const url = new URL(m[1].replace(/&amp;/g, "&"));
+          return url.searchParams.get("page_info");
+        }
+      }
+    }
+    return null;
+  }
+
+  // 1) REST pagination over ALL custom collections
+  let pageInfo = null;
+  while (true) {
+    const url = pageInfo
+      ? `${baseUrl}?limit=250&page_info=${encodeURIComponent(pageInfo)}`
+      : `${baseUrl}?limit=250`;
+    const r = await fetchWithRetry(url, {
+      headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
+    });
+    if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
+
+    const j = await r.json();
+    const list = Array.isArray(j.custom_collections) ? j.custom_collections : [];
+
+    // exact normalized match
+    let found = list.find(c => normalizeForMatch(c.title) === want);
+    if (found) return found;
+    // fallback: startsWith (useful ak je prefix/sufix)
+    found = list.find(c => normalizeForMatch(c.title).startsWith(want));
+    if (found) return found;
+
+    // next page?
+    const next = parseNextPageInfo(r);
+    if (!next) break;
+    pageInfo = next;
+  }
+
+  // 2) GraphQL fallback by title query (covers prípad, keď REST stránkovanie niečo preskočí)
+  try {
+    const q = `title:'${title.replace(/'/g, "\\'")}'`;
+    const data = await gql(`
+      query($q: String!) {
+        collections(first: 10, query: $q) {
+          edges {
+            node {
+              id
+              title
+              ... on Collection { handle }
+            }
+          }
+        }
+      }
+    `, { q });
+    const edges = data?.collections?.edges || [];
+    const hit = edges.map(e => e.node).find(n => normalizeForMatch(n.title) === want) ||
+                edges.map(e => e.node).find(n => normalizeForMatch(n.title).startsWith(want));
+    if (hit?.id) {
+      return { id: Number(gidToNumeric(hit.id)), title: hit.title };
+    }
+  } catch (e) {
+    console.warn("GraphQL fallback lookup failed:", e?.message || e);
+  }
+
+  return null;
 }
 
 async function restCreateCustomCollection(title) {
@@ -666,6 +727,28 @@ async function restCreateCollect(productId, collectionId) {
   if (!r.ok) throw new Error(`REST create collect failed: ${r.status} ${await r.text()}`);
   const j = await r.json();
   return j.collect;
+}
+
+// --- Attach-only mode: do not create collections, only attach to ones that already exist
+const ATTACH_ONLY =
+  String(process.env.ATTACH_ONLY || "1") === "1" ||
+  String(process.env.ATTACH_ONLY || "true") === "true";
+
+/**
+ * Attach product to an existing linear branch of collections (root -> ... -> leaf).
+ * Returns true when all collections were found and attached; false if any were missing.
+ */
+async function attachToExistingBranch(branchNodes, numericProductId) {
+  for (const node of branchNodes) {
+    const title = node.name || node.title;
+    const coll = await restFindCustomCollectionByTitle(title);
+    if (!coll) {
+      console.warn("ATTACH_ONLY: missing collection =>", title);
+      return false;
+    }
+    await restCreateCollect(numericProductId, coll.id);
+  }
+  return true;
 }
 
 // --- Files helpers (REST)
@@ -1167,15 +1250,34 @@ CIEĽ: Vráť JSON s kľúčmi:
       const productNumericId = body.id;
       for (const slug of slugPicks) {
         const branchNodes = getBranchBySlug(detectedBrand, slug);
-        console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name));
+        console.log(
+          "TAXO BRANCH (by slug) =>",
+          detectedBrand,
+          slug,
+          "=>",
+          branchNodes.map((n) => n.name)
+        );
         if (!branchNodes.length) {
           console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
           continue;
         }
-        const ensured = await ensureBranchAndTaxonomy(branchNodes);
-        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
-        for (const n of ensured) {
-          await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
+
+        if (ATTACH_ONLY) {
+          const ok = await attachToExistingBranch(branchNodes, productNumericId);
+          if (!ok) {
+            console.warn(
+              "ATTACH_ONLY: some collections missing, product not fully attached."
+            );
+          }
+        } else {
+          const ensured = await ensureBranchAndTaxonomy(branchNodes);
+          console.log(
+            "ENSURE BRANCH OK =>",
+            ensured.map((x) => `${x.title}#${x.id}`)
+          );
+          for (const n of ensured) {
+            await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
+          }
         }
       }
     } else {
