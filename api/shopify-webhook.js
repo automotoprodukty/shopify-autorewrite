@@ -1061,23 +1061,46 @@ CIEĽ: Vráť JSON s kľúčmi:
         return arr.filter(s => (seen.has(s) ? false : (seen.add(s), true)));
       };
       const STOP = new Set(["a","na","do","pre","pod","nad","pri","po","z","s","bez","auto","ine","ostatne","material","drobny","drobne"]);
+      // Create robust token list from slug, ignoring tiny/stopwords
       const tokenizeSlug = (slug)=>{
-        return String(slug||"").split(/[-_ ]+/).map(norm).filter(t => t && t.length>=4 && !STOP.has(t));
+        return String(slug||"")
+          .split(/[-_ ]+/)
+          .map(norm)
+          .filter(t => t && t.length>=4 && !STOP.has(t));
       };
+      // Very light-weight "stemming" for SK/CZ plural/case endings + prefix scoring
+      function stemForms(t) {
+        const forms = new Set([t]);
+        // strip common plural/case endings
+        const endings = ["y","i","e","a","u","ov","ove","ové","ami","ami","ách","och","om","em","om","ou","ům","ů"];
+        for (const end of endings) {
+          if (t.endsWith(end) && t.length - end.length >= 4) {
+            forms.add(t.slice(0, -end.length));
+          }
+        }
+        // also add a conservative 60% prefix (min 4 chars)
+        const min = Math.max(4, Math.floor(t.length*0.6));
+        forms.add(t.slice(0, min));
+        return Array.from(forms).filter(s => s && s.length>=4);
+      }
       const scoreLeaf = (leaf)=>{
         const parts = tokenizeSlug(leaf.node_slug||"");
         if (!parts.length) return 0;
         let score = 0;
         for (const t of parts){
-          try {
-            const re = new RegExp(`\\b${t}\\w*\\b`, "gi");
-            const m = text.match(re);
-            score += m ? m.length : 0;
-          } catch {}
+          const candidates = stemForms(t);
+          for (const c of candidates){
+            try {
+              // accept word-boundary prefix matches (e.g., "volant" matches "volanty", and vice versa)
+              const re = new RegExp(`\\b${c}\\w*\\b`, "gi");
+              const m = text.match(re);
+              score += m ? m.length : 0;
+            } catch {}
+          }
         }
         return score;
       };
-      const MIN_SCORE = 1;
+      const MIN_SCORE = 2;
 
       // 0) If AI returned any non-generic slug that exists in leavesFull, respect it (deduped)
       const setFull = new Set(leavesFull.map(l => String(l.node_slug||"")));
