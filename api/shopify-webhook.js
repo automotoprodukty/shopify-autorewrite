@@ -1048,68 +1048,76 @@ CIEĽ: Vráť JSON s kľúčmi:
     function buildTextForMatch(p){
       return normalizeSimple([p.title, p.descriptionHtml, ...(p.tags||[])].join(" "));
     }
-    // Deterministic keyword → slug map for the most obvious cases (kept tiny on purpose)
-    const KEYWORD_TO_SLUG = {
-      "volanty": ["volant", "steering wheel"],
-      // add more high-signal pairs later if needed
-    };
-    // Try to infer a more specific leaf by matching product text with tokens derived from node_slug
-    function autoRefineSlugPicks(slugs, brand, p, leavesWhitelist){
+    // --- NEW autoRefineSlugPicks: No aliases; 2-step fallback; generic 'ine' only as last resort
+    function autoRefineSlugPicks(slugsFromAI, brand, p, leavesFull, preferredArea){
       const text = buildTextForMatch(p);
-      const leaves = Array.isArray(leavesWhitelist) ? leavesWhitelist : getBrandLeaves(brand);
-
-      // 1) Respect AI if it picked any non-generic slug(s)
       const norm = (s)=>normalizeSimple(s);
-      const cleaned = (Array.isArray(slugs) ? slugs : [])
-        .map(s => String(s||""))
+      const cleaned = (Array.isArray(slugsFromAI) ? slugsFromAI : [])
+        .map(s => String(s||"").trim())
         .filter(Boolean);
-      const nonGeneric = cleaned.filter(s => norm(s) !== "ine");
-      if (nonGeneric.length) {
+      const isGeneric = (s)=> norm(s)==="ine";
+      const uniq = (arr)=> {
         const seen = new Set();
-        const unique = nonGeneric.filter(s => (seen.has(s) ? false : (seen.add(s), true)));
-        return unique;
-      }
-
-      // 2) Try deterministic keyword → slug within whitelist
-      const lowers = text;
-      const whitelistSet = new Set(leaves.map(l => String(l.node_slug||"")));
-      for (const [slug, kws] of Object.entries(KEYWORD_TO_SLUG)) {
-        if (!whitelistSet.has(slug)) continue; // respect subtree
-        if (kws.some(kw => lowers.includes(normalizeSimple(kw)))) {
-          return [slug];
-        }
-      }
-
-      // 3) Token scoring within whitelist (avoid generic noise)
-      const STOP = new Set(["a","na","do","pre","pod","nad","pri","po","z","s","bez","auto","ine","ostatne","material","drobny","drobne","autopoistky","karoseria","ochrana"]);
-      let bestSlug = null;
-      let bestScore = 0;
-      const wordBoundaryMatch = (token) => {
-        try {
-          const re = new RegExp(`\\b${token}\\w*\\b`, "g");
-          const m = text.match(re);
-          return m ? m.length : 0;
-        } catch { return 0; }
+        return arr.filter(s => (seen.has(s) ? false : (seen.add(s), true)));
       };
-
-      for (const leaf of leaves){
-        const slug = String(leaf.node_slug||"");
-        if (!slug) continue;
-        const parts = slug.split(/[-_ ]+/).map(normalizeSimple).filter(t => t && t.length >= 4 && !STOP.has(t));
-        if (!parts.length) continue;
+      const STOP = new Set(["a","na","do","pre","pod","nad","pri","po","z","s","bez","auto","ine","ostatne","material","drobny","drobne"]);
+      const tokenizeSlug = (slug)=>{
+        return String(slug||"").split(/[-_ ]+/).map(norm).filter(t => t && t.length>=4 && !STOP.has(t));
+      };
+      const scoreLeaf = (leaf)=>{
+        const parts = tokenizeSlug(leaf.node_slug||"");
+        if (!parts.length) return 0;
         let score = 0;
         for (const t of parts){
-          score += wordBoundaryMatch(t);
+          try {
+            const re = new RegExp(`\\b${t}\\w*\\b`, "gi");
+            const m = text.match(re);
+            score += m ? m.length : 0;
+          } catch {}
         }
-        if (score > bestScore){
-          bestScore = score;
-          bestSlug = slug;
+        return score;
+      };
+      const MIN_SCORE = 1;
+
+      // 0) If AI returned any non-generic slug that exists in leavesFull, respect it (deduped)
+      const setFull = new Set(leavesFull.map(l => String(l.node_slug||"")));
+      const aiNonGeneric = uniq(cleaned.filter(s => !isGeneric(s) && setFull.has(String(s))));
+      if (aiNonGeneric.length) return aiNonGeneric;
+
+      // Helper: restrict to a top-node area if provided
+      const getAreaLeaves = ()=>{
+        if (!preferredArea) return [];
+        const topNode = findBrandChildNode(brand, preferredArea);
+        return topNode ? getLeavesUnderNode(topNode) : [];
+      };
+
+      // 1) Try scoring within preferred area first (if any)
+      const areaLeaves = getAreaLeaves();
+      if (areaLeaves.length){
+        let best = null, bestScore = 0;
+        for (const leaf of areaLeaves){
+          const s = scoreLeaf(leaf);
+          if (s > bestScore){ bestScore = s; best = leaf; }
         }
+        if (best && bestScore >= MIN_SCORE) return [best.node_slug];
       }
-      if (bestScore > 0 && bestSlug){
-        return [bestSlug];
+
+      // 2) Fallback: score across the FULL brand tree
+      let best = null, bestScore = 0;
+      for (const leaf of leavesFull){
+        const s = scoreLeaf(leaf);
+        if (s > bestScore){ bestScore = s; best = leaf; }
       }
-      return cleaned; // give back whatever came (likely ["ine"]) so caller can decide
+      if (best && bestScore >= MIN_SCORE) return [best.node_slug];
+
+      // 3) Absolute last resort: generic "ine" only if we have a preferred area
+      if (areaLeaves.length){
+        const generic = areaLeaves.find(l => norm(l.node_slug)==="ine");
+        if (generic) return [generic.node_slug];
+      }
+
+      // Otherwise: give back whatever AI sent (may be ["ine"]) and let caller decide to skip
+      return cleaned;
     }
 
     // --- Slug-only classification (branch whitelist)
@@ -1131,15 +1139,14 @@ CIEĽ: Vráť JSON s kľúčmi:
           }
         }
       }
-      let leaves;
-      if (preferredArea) {
-        const topNode = findBrandChildNode(detectedBrand, preferredArea);
-        leaves = topNode ? getLeavesUnderNode(topNode) : getBrandLeaves(detectedBrand);
-      } else {
-        leaves = getBrandLeaves(detectedBrand);
-      }
-      const allowed = leaves.map(x => ({ slug: x.node_slug, label: x.path ? x.path.join(" → ") : (x.name||x.title) }))
-                            .filter(x => x.slug);
+      // Always compute leavesFull (full brand leaves, not area-restricted)
+      const leavesFull = getBrandLeaves(detectedBrand);
+      // Logging: preferred area and leavesFull count
+      console.log("Preferred area from AI (if any):", preferredArea || "(none)");
+      console.log("LeavesFull count:", Array.isArray(leavesFull)? leavesFull.length : 0);
+      // For AI: allowed = leavesFull (not area-restricted)
+      const allowed = leavesFull.map(x => ({ slug: x.node_slug, label: x.path ? x.path.join(" → ") : (x.name||x.title) }))
+                                .filter(x => x.slug);
       try {
         const cls = await aiPickCollectionSlugs({
           title: p.title,
@@ -1151,8 +1158,9 @@ CIEĽ: Vráť JSON s kľúčmi:
         });
         slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
         console.log("AI slug picks =>", slugPicks);
-        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p, leaves);
-        console.log("Slug picks after auto-refine =>", slugPicks);
+        // New: autoRefineSlugPicks(slugsFromAI, brand, p, leavesFull, preferredArea)
+        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p, leavesFull, preferredArea);
+        console.log("Slug picks after auto-refine =>", slugPicks, "(area-first, then full-tree; generic 'ine' only as last resort)");
       } catch (e) {
         console.warn("AI slug-pick failed:", e?.message || e);
       }
