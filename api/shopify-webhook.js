@@ -586,80 +586,19 @@ function normalizeForMatch(raw) {
 // ---- Collections helpers (REST)
 async function restFindCustomCollectionByTitle(title) {
   const want = normalizeForMatch(title);
-  const baseUrl = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json`;
-
-  // Helper: parse RFC5988 Link header for rel="next"
-  function parseNextPageInfo(res) {
-    const link = res.headers.get("link") || res.headers.get("Link");
-    if (!link) return null;
-    // Example: <https://shop.myshopify.com/admin/api/2025-07/custom_collections.json?limit=250&amp;page_info=XYZ>; rel="next"
-    const parts = link.split(",");
-    for (const p of parts) {
-      if (/\brel="?next"?/.test(p)) {
-        const m = p.match(/<([^>]+)>/);
-        if (m && m[1]) {
-          const url = new URL(m[1].replace(/&amp;/g, "&"));
-          return url.searchParams.get("page_info");
-        }
-      }
-    }
-    return null;
-  }
-
-  // 1) REST pagination over ALL custom collections
-  let pageInfo = null;
-  while (true) {
-    const url = pageInfo
-      ? `${baseUrl}?limit=250&page_info=${encodeURIComponent(pageInfo)}`
-      : `${baseUrl}?limit=250`;
-    const r = await fetchWithRetry(url, {
-      headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
-    });
-    if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
-
-    const j = await r.json();
-    const list = Array.isArray(j.custom_collections) ? j.custom_collections : [];
-
-    // exact normalized match
-    let found = list.find(c => normalizeForMatch(c.title) === want);
-    if (found) return found;
-    // fallback: startsWith (useful ak je prefix/sufix)
-    found = list.find(c => normalizeForMatch(c.title).startsWith(want));
-    if (found) return found;
-
-    // next page?
-    const next = parseNextPageInfo(r);
-    if (!next) break;
-    pageInfo = next;
-  }
-
-  // 2) GraphQL fallback by title query (covers prípad, keď REST stránkovanie niečo preskočí)
-  try {
-    const q = `title:'${title.replace(/'/g, "\\'")}'`;
-    const data = await gql(`
-      query($q: String!) {
-        collections(first: 10, query: $q) {
-          edges {
-            node {
-              id
-              title
-              ... on Collection { handle }
-            }
-          }
-        }
-      }
-    `, { q });
-    const edges = data?.collections?.edges || [];
-    const hit = edges.map(e => e.node).find(n => normalizeForMatch(n.title) === want) ||
-                edges.map(e => e.node).find(n => normalizeForMatch(n.title).startsWith(want));
-    if (hit?.id) {
-      return { id: Number(gidToNumeric(hit.id)), title: hit.title };
-    }
-  } catch (e) {
-    console.warn("GraphQL fallback lookup failed:", e?.message || e);
-  }
-
-  return null;
+  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json?limit=250`;
+  const r = await fetchWithRetry(url, {
+    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
+  });
+  if (!r.ok) throw new Error(`REST get custom_collections failed: ${r.status} ${await r.text()}`);
+  const j = await r.json();
+  const list = Array.isArray(j.custom_collections) ? j.custom_collections : [];
+  // try exact normalized match first
+  let found = list.find(c => normalizeForMatch(c.title) === want);
+  if (found) return found;
+  // fallback: startsWith (useful when kolekcie majú prefix/sufix)
+  found = list.find(c => normalizeForMatch(c.title).startsWith(want));
+  return found || null;
 }
 
 async function restCreateCustomCollection(title) {
@@ -729,26 +668,6 @@ async function restCreateCollect(productId, collectionId) {
   return j.collect;
 }
 
-// --- Attach-only mode: ALWAYS true here (we won't create collections from webhook)
-const ATTACH_ONLY = true;
-
-/**
- * Attach product to an existing linear branch of collections (root -> ... -> leaf).
- * Returns true when all collections were found and attached; false if any were missing.
- */
-async function attachToExistingBranch(branchNodes, numericProductId) {
-  for (const node of branchNodes) {
-    const title = node.name || node.title;
-    const coll = await restFindCustomCollectionByTitle(title);
-    if (!coll) {
-      console.warn("ATTACH_ONLY: missing collection =>", title);
-      return false;
-    }
-    await restCreateCollect(numericProductId, coll.id);
-  }
-  return true;
-}
-
 // --- Files helpers (REST)
 async function restSearchFilesByFilename(filename) {
   // Search by exact filename within Shopify Files
@@ -767,13 +686,6 @@ async function restSearchFilesByFilename(filename) {
   return list;
 }
 
-
-// Try a URL, then again with a cache-buster query (CDNs can 404 until purge)
-async function httpOkWithBust(url) {
-  if (await httpHeadOk(url)) return true;
-  const bust = url.includes("?") ? `&cb=${Date.now()}` : `?cb=${Date.now()}`;
-  return await httpHeadOk(url + bust);
-}
 
 // Helper: Check if a URL exists via HEAD request, rate-limited, with fallback to GET if HEAD fails
 async function httpHeadOk(url) {
@@ -796,11 +708,9 @@ async function findImageUrlForNodeSlug(node_slug) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const base = (process.env.COLLECTION_IMAGE_BASE || "https://cdn.jsdelivr.net/gh/automotoprodukty/shopify-autorewrite@main/collections%20img/").trim();
-  console.log("IMG BASE:", base);
+  const base = process.env.COLLECTION_IMAGE_BASE || "";
   // If base is raw.githubusercontent.com, also prepare a jsDelivr fallback
   let fallbackBase = "";
-  let fallbackBase2 = "";
   try {
     if (base.includes("raw.githubusercontent.com")) {
       // Example raw: https://raw.githubusercontent.com/<owner>/<repo>/<branch>/collections%20img/
@@ -813,33 +723,19 @@ async function findImageUrlForNodeSlug(node_slug) {
         fallbackBase = `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${pathRest}`;
       }
     }
-    if (base.includes("cdn.jsdelivr.net/gh/")) {
-      // Example jsDelivr: https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/<path> 
-      // Raw:              https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>
-      try {
-        const afterGh = base.split("cdn.jsdelivr.net/gh/")[1]; // "<owner>/<repo>@<branch>/<path>"
-        if (afterGh) {
-          const [owner, rest] = afterGh.split("/");
-          const [repo, afterRepo] = rest.split("@");
-          const branch = afterRepo.split("/")[0];
-          const pathRest = afterRepo.slice(branch.length + 1); // remove "<branch>/"
-          fallbackBase2 = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${pathRest}`;
-        }
-      } catch {}
-    }
   } catch {}
 
   // A) Prefer external GitHub/CDN base when provided
   if (base) {
     console.log("IMG BASE:", base, "slug=", node_slug);
-    const basesToTry = Array.from(new Set([base, fallbackBase, fallbackBase2].filter(Boolean)));
+    const basesToTry = [base, fallbackBase].filter(Boolean);
     for (const b of basesToTry) {
       if (b !== base) console.log("IMG FALLBACK BASE:", b);
       if (node_slug) {
         for (const ext of exts) {
           const url = `${b}${node_slug}.${ext}`;
           console.log("IMG try:", url);
-          if (await httpOkWithBust(url)) return url;
+          if (await httpHeadOk(url)) return url;
         }
       }
       // fallback to default image(s)
@@ -848,7 +744,7 @@ async function findImageUrlForNodeSlug(node_slug) {
       for (const n of defCandidates) {
         const url = `${b}${n}`;
         console.log("IMG try fallback:", url);
-        if (await httpOkWithBust(url)) return url;
+        if (await httpHeadOk(url)) return url;
       }
     }
     console.warn("IMG: no match under external base(s), returning null");
@@ -1039,7 +935,7 @@ CIEĽ: Vráť JSON s kľúčmi:
     // --- DIAGNOSTICS: log AI collections & provide safe fallback ---
     console.log("AI collections =>", out?.collections);
 
-    // --- Deterministic auto-refine of slug picks (v26 logic)
+    // --- Deterministic auto-refine of slug picks (no manual hints)
     function normalizeSimple(s){ 
       return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""); 
     }
@@ -1110,7 +1006,7 @@ CIEĽ: Vráť JSON s kľúčmi:
       return cleaned; // give back whatever came (likely ["ine"]) so caller can decide
     }
 
-    // --- Slug-only classification (branch whitelist, v26 behavior)
+    // --- Slug-only classification (branch whitelist)
     let slugPicks = [];
     const detectedBrand = detectBrandFromProduct(p, out);
     if (detectedBrand) {
@@ -1248,23 +1144,15 @@ CIEĽ: Vráť JSON s kľúčmi:
       const productNumericId = body.id;
       for (const slug of slugPicks) {
         const branchNodes = getBranchBySlug(detectedBrand, slug);
-        console.log(
-          "TAXO BRANCH (by slug) =>",
-          detectedBrand,
-          slug,
-          "=>",
-          branchNodes.map((n) => n.name)
-        );
+        console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name));
         if (!branchNodes.length) {
           console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
           continue;
         }
-
-        {
-          const ok = await attachToExistingBranch(branchNodes, productNumericId);
-          if (!ok) {
-            console.warn("ATTACH_ONLY: some collections missing, product not fully attached.");
-          }
+        const ensured = await ensureBranchAndTaxonomy(branchNodes);
+        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
+        for (const n of ensured) {
+          await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
         }
       }
     } else {
