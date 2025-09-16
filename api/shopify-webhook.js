@@ -583,6 +583,9 @@ function normalizeForMatch(raw) {
     .replace(/[‐‑–—]/g, "-");
 }
 
+// Attach-only mode: all collections already exist; webhook will never create them
+const ATTACH_ONLY = true;
+
 // ---- Collections helpers (REST)
 async function restFindCustomCollectionByTitle(title) {
   const want = normalizeForMatch(title);
@@ -666,6 +669,30 @@ async function restCreateCollect(productId, collectionId) {
   if (!r.ok) throw new Error(`REST create collect failed: ${r.status} ${await r.text()}`);
   const j = await r.json();
   return j.collect;
+}
+
+// --- Attach-only: find existing collections by title and attach product (no creation, no images)
+async function attachToExistingBranch(branchNodes, productNumericId) {
+  // branchNodes: array of taxonomy nodes from root -> leaf
+  const ensured = [];
+  for (const node of branchNodes) {
+    const title = node.name || node.title;
+    const coll = await restFindCustomCollectionByTitle(title);
+    if (!coll?.id) {
+      console.warn("ATTACH_ONLY: missing collection =>", title, "(skipping creation)");
+      continue;
+    }
+    ensured.push({ id: coll.id, title });
+  }
+  if (!ensured.length) return false;
+  for (const n of ensured) {
+    try {
+      await restCreateCollect(productNumericId, n.id); // safe if already exists
+    } catch (e) {
+      console.warn("ATTACH_ONLY: collect attach failed:", n.title, e?.message || e);
+    }
+  }
+  return ensured.length === branchNodes.length;
 }
 
 // --- Files helpers (REST)
@@ -1172,10 +1199,9 @@ CIEĽ: Vráť JSON s kľúčmi:
           console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
           continue;
         }
-        const ensured = await ensureBranchAndTaxonomy(branchNodes);
-        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
-        for (const n of ensured) {
-          await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
+        const ok = await attachToExistingBranch(branchNodes, productNumericId);
+        if (!ok) {
+          console.warn("ATTACH_ONLY: some collections missing, product not fully attached for branch:", branchNodes.map(n => n.name).join(" -> "));
         }
       }
     } else {
