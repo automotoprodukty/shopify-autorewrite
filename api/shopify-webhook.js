@@ -6,10 +6,17 @@
 // 5) Preloží hodnoty vo variantoch podľa nového zoznamu (mapovanie podľa indexu)
 // 6) Zapíše metafield automation.processed=true
 
-import collectionsMap from "../collections-map.json" assert { type: "json" };
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { createRequire } from "module";
+let collectionsMap = null;
+try {
+  const require = createRequire(import.meta.url);
+  collectionsMap = require("../collections-map.json"); // súbor musí byť o level vyššie ako api/
+} catch (e) {
+  // nič – fallbacky nižšie
+}
 // ==== Feature flags (env) ====
 const ENABLE_COLLECTIONS_ATTACH = (process.env.ENABLE_COLLECTIONS_ATTACH || "true") === "true";
 const DRY_RUN = (process.env.DRY_RUN || "true") === "true"; // odporúčam nechať najprv true
@@ -921,19 +928,21 @@ function normalizeTitleMatch(s) {
 }
 
 function tryLoadCollectionsMapFromFile() {
-  // 0) staticky importovaný balík (najistejšie na Verceli)
-  if (Array.isArray(collectionsMap) && collectionsMap.length) {
-    __collectionsByTitle.clear();
-    for (const rec of collectionsMap) {
-      if (!rec?.title || !rec?.id) continue;
-      __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+  // 0) staticky natiahnutý JSON cez createRequire
+  try {
+    if (Array.isArray(collectionsMap) && collectionsMap.length) {
+      __collectionsByTitle.clear();
+      for (const rec of collectionsMap) {
+        if (!rec?.title || !rec?.id) continue;
+        __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+      }
+      __collectionsLoaded = true;
+      console.log("Collections map loaded from static require with", __collectionsByTitle.size, "items");
+      return true;
     }
-    __collectionsLoaded = true;
-    console.log("Collections map loaded from static import with", __collectionsByTitle.size, "items");
-    return true;
-  }
+  } catch {}
 
-  // 1) ENV fallback
+  // 1) ENV fallback (vložíš celý obsah JSON do Vercel ENV `COLLECTIONS_MAP_JSON`)
   try {
     const fromEnv = process.env.COLLECTIONS_MAP_JSON;
     if (fromEnv) {
@@ -953,7 +962,7 @@ function tryLoadCollectionsMapFromFile() {
     console.warn("ENV COLLECTIONS_MAP_JSON parse failed:", e?.message || e);
   }
 
-  // 2) FS fallback (ak bežíš lokálne)
+  // 2) FS fallback (lokálne spúšťanie)
   try {
     const file = path.join(process.cwd(), "collections-map.json");
     const data = fs.readFileSync(file, "utf8");
