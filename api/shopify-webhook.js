@@ -9,18 +9,64 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { createRequire } from "module";
-let collectionsMap = null;
-try {
-  const require = createRequire(import.meta.url);
-  collectionsMap = require("./collections-map.json"); // <- zmena na ./  (rovnaký priečinok)
-  console.log("collectionsMap loaded via static require (api/)");
-} catch (e) {
-  console.warn("static require collections-map.json failed:", e?.message);
+// --- Load collections-map.json at startup (existing-only strategy)
+let collectionsMapCache = null;
+function normalizeTitleForMatch(raw) {
+  if (!raw) return "";
+  return String(raw)
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[‐‑–—]/g, "-");
 }
-// ==== Feature flags (env) ====
-const ENABLE_COLLECTIONS_ATTACH = (process.env.ENABLE_COLLECTIONS_ATTACH || "true") === "true";
-const DRY_RUN = (process.env.DRY_RUN || "true") === "true"; // odporúčam nechať najprv true
+function loadCollectionsMap() {
+  if (collectionsMapCache) return collectionsMapCache;
+  const mapPath = path.join(process.cwd(), "collections-map.json");
+  try {
+    const data = fs.readFileSync(mapPath, "utf8");
+    const arr = JSON.parse(data);
+    // Expecting array of records: { "title": "...", "id": 123456789 }
+    const byNormTitle = new Map();
+    for (const r of Array.isArray(arr) ? arr : []) {
+      const title = r?.title ?? r?.name ?? "";
+      const id = r?.id ?? r?.collection_id ?? r?.collectionId;
+      if (!title || !id) continue;
+      const key = normalizeTitleForMatch(title);
+      if (!byNormTitle.has(key)) byNormTitle.set(key, Number(id));
+    }
+    collectionsMapCache = byNormTitle;
+    console.log("Collections map loaded:", byNormTitle.size, "titles");
+  } catch (e) {
+    console.warn("collections-map.json not found or invalid:", e?.message || e);
+    collectionsMapCache = new Map();
+  }
+  return collectionsMapCache;
+}
+function findCollectionIdByTitle(title) {
+  const map = loadCollectionsMap();
+  if (!map) return null;
+  const key = normalizeTitleForMatch(title);
+  return map.get(key) || null;
+}
+function resolveCollectionIdsFromBranch(branchNodes) {
+  const ids = [];
+  for (const node of Array.isArray(branchNodes) ? branchNodes : []) {
+    const title = node?.name || node?.title;
+    if (!title) continue;
+    const id = findCollectionIdByTitle(title);
+    if (id) {
+      ids.push(id);
+    } else {
+      console.warn("Collections map: missing title ->", title);
+    }
+  }
+  // Dedupe while preserving order
+  return Array.from(new Set(ids));
+}
+const COLLECTIONS_STRATEGY = process.env.COLLECTIONS_STRATEGY || "existing_map"; // existing_map | off
+const DRY_RUN_COLLECTIONS = /^1|true$/i.test(String(process.env.DRY_RUN_COLLECTIONS || ""));
 // --- Load taxonomy.json at startup and keep in memory
 let taxonomia = null;
 function loadTaxonomia() {
@@ -613,38 +659,6 @@ async function restFindCustomCollectionByTitle(title) {
   return found || null;
 }
 
-async function restCreateCustomCollection(title) {
-  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections.json`;
-  const r = await fetchWithRetry(url, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ custom_collection: { title } })
-  });
-  if (!r.ok) throw new Error(`REST create custom_collection failed: ${r.status} ${await r.text()}`);
-  const j = await r.json();
-  return j.custom_collection;
-}
-
-async function restEnsureCustomCollection(title) {
-  let c = await restFindCustomCollectionByTitle(title);
-  if (c) return c;
-  return await restCreateCustomCollection(title);
-}
-
-// --- Helper: Get custom collection by ID, including image and title
-async function restGetCustomCollection(collectionId) {
-  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${collectionId}.json?fields=id,image,title`;
-  const r = await fetchWithRetry(url, {
-    headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN }
-  });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`REST get custom_collection failed: ${r.status} ${await r.text()}`);
-  const j = await r.json();
-  return j.custom_collection || null;
-}
 
 async function restCollectExists(productId, collectionId) {
   const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/collects.json?product_id=${productId}&collection_id=${collectionId}&limit=1`;
@@ -721,308 +735,6 @@ async function httpHeadOk(url) {
   }
 }
 
-async function findImageUrlForNodeSlug(node_slug) {
-  const exts = (process.env.COLLECTION_IMAGE_EXTS || "png,jpg,jpeg,webp")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const base = (process.env.COLLECTION_IMAGE_BASE || "https://cdn.jsdelivr.net/gh/automotoprodukty/shopify-autorewrite@main/collections%20img/").trim();
-  console.log("IMG BASE:", base);
-  // If base is raw.githubusercontent.com, also prepare a jsDelivr fallback
-  let fallbackBase = "";
-  let fallbackBase2 = "";
-  try {
-    if (base.includes("raw.githubusercontent.com")) {
-      // Example raw: https://raw.githubusercontent.com/<owner>/<repo>/<branch>/collections%20img/
-      // jsDelivr:      https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/collections%20img/
-      const parts = base.split("raw.githubusercontent.com/")[1]; // "<owner>/<repo>/<branch>/path/"
-      if (parts) {
-        const seg = parts.split("/");
-        const owner = seg[0], repo = seg[1], branch = seg[2];
-        const pathRest = seg.slice(3).join("/");
-        fallbackBase = `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${pathRest}`;
-      }
-    }
-    if (base.includes("cdn.jsdelivr.net/gh/")) {
-      // Example jsDelivr: https://cdn.jsdelivr.net/gh/<owner>/<repo>@<branch>/<path> 
-      // Raw:              https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>
-      try {
-        const afterGh = base.split("cdn.jsdelivr.net/gh/")[1]; // "<owner>/<repo>@<branch>/<path>"
-        if (afterGh) {
-          const [owner, rest] = afterGh.split("/");
-          const [repo, afterRepo] = rest.split("@");
-          const branch = afterRepo.split("/")[0];
-          const pathRest = afterRepo.slice(branch.length + 1); // remove "<branch>/"
-          fallbackBase2 = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${pathRest}`;
-        }
-      } catch {}
-    }
-  } catch {}
-
-  // A) Prefer external GitHub/CDN base when provided
-  if (base) {
-    console.log("IMG BASE:", base, "slug=", node_slug);
-    const basesToTry = Array.from(new Set([base, fallbackBase, fallbackBase2].filter(Boolean)));
-    for (const b of basesToTry) {
-      if (b !== base) console.log("IMG FALLBACK BASE:", b);
-      if (node_slug) {
-        for (const ext of exts) {
-          const url = `${b}${node_slug}.${ext}`;
-          console.log("IMG try:", url);
-          if (await httpOkWithBust(url)) return url;
-        }
-      }
-      // fallback to default image(s)
-      const defName = process.env.COLLECTION_IMAGE_DEFAULT || "default.png";
-      const defCandidates = [defName, ...exts.map((e) => `default.${e}`)];
-      for (const n of defCandidates) {
-        const url = `${b}${n}`;
-        console.log("IMG try fallback:", url);
-        if (await httpOkWithBust(url)) return url;
-      }
-    }
-    console.warn("IMG: no match under external base(s), returning null");
-    // when external base is set, do not try Shopify Files
-    return null;
-  }
-
-  // B) Fallback to Shopify Files search when no external base is configured
-  console.log("IMG: external base not set; falling back to Shopify Files", node_slug);
-  const candidates = [];
-  if (node_slug) {
-    for (const ext of exts) candidates.push(`${node_slug}.${ext}`);
-  }
-  const defCandidates = [process.env.COLLECTION_IMAGE_DEFAULT || "default.png", ...exts.map((e) => `default.${e}`)];
-  candidates.push(...defCandidates);
-
-  for (const name of candidates) {
-    const files = await restSearchFilesByFilename(name);
-    const hit = files.find((f) => (f?.filename || "").toLowerCase() === name.toLowerCase());
-    if (hit?.url) return hit.url; // Shopify CDN URL
-  }
-  return null;
-}
-
-// --- Metafields (REST) for Custom Collections
-async function restUpsertCollectionMetafield(collectionId, namespace, key, type, value) {
-  await rateLimit();
-  const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/metafields.json`;
-  const r = await fetchWithRetry(url, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      metafield: {
-        namespace,
-        key,
-        type,
-        value,
-        owner_resource: "collection",
-        owner_id: collectionId
-      }
-    })
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    console.warn(`Metafield upsert failed for collection ${collectionId} ${namespace}.${key}: ${r.status} ${t}`);
-  }
-}
-
-async function setCollectionTaxonomyFields(nodesEnsured) {
-  // nodesEnsured: [{ id, title, node_slug, facets, level, parentId, childId }]
-  for (const n of nodesEnsured) {
-    await restUpsertCollectionMetafield(n.id, "taxonomy", "level", "number_integer", String(n.level));
-    if (n.parentId) await restUpsertCollectionMetafield(n.id, "taxonomy", "parent", "number_integer", String(n.parentId));
-    const childrenStr = n.childId ? JSON.stringify([n.childId]) : JSON.stringify([]);
-    await restUpsertCollectionMetafield(n.id, "taxonomy", "children", "json", childrenStr);
-    if (n.node_slug) await restUpsertCollectionMetafield(n.id, "taxonomy", "node_slug", "single_line_text_field", n.node_slug);
-    if (Array.isArray(n.facets) && n.facets.length) {
-      await restUpsertCollectionMetafield(n.id, "taxonomy", "facets", "list.single_line_text_field", JSON.stringify(n.facets));
-    }
-  }
-}
-
-// --- Custom Sub Collections metafield (list of collection references)
-async function restSetSubCollections(parentId, childIds = []) {
-  // writes to namespace 'custom', key 'sub_collections', type list.collection_reference
-  await restUpsertCollectionMetafield(
-    parentId,
-    "custom",
-    "sub_collections",
-    "list.collection_reference",
-    JSON.stringify(childIds.map(id => `gid://shopify/Collection/${id}`))
-  );
-}
-
-// Link custom.sub_collections for a linear branch (each parent points to its direct child)
-async function setCustomSubCollectionsForBranch(nodesEnsured) {
-  for (let i = 0; i < nodesEnsured.length; i++) {
-    const parent = nodesEnsured[i];
-    const child = nodesEnsured[i + 1];
-    const childIds = child ? [child.id] : [];
-    await restSetSubCollections(parent.id, childIds);
-  }
-}
-
-// Ensure whole branch (create missing), set images if absent, then write taxonomy metafields
-async function ensureBranchAndTaxonomy(branchNodes) {
-  const ensured = [];
-  for (let i = 0; i < branchNodes.length; i++) {
-    const node = branchNodes[i];
-    const title = node.name || node.title;
-    const coll = await restEnsureCustomCollection(title);
-
-    // Assign image once (only if missing)
-    try {
-      const full = await restGetCustomCollection(coll.id);
-      if (!full?.image?.src) {
-        const fileUrl = await findImageUrlForNodeSlug(node.node_slug);
-        if (fileUrl) {
-          const url = `https://${process.env.SHOPIFY_SHOP}.myshopify.com/admin/api/${process.env.SHOPIFY_API_VERSION || "2024-04"}/custom_collections/${coll.id}.json`;
-          await fetch(url, {
-            method: "PUT",
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ custom_collection: { id: coll.id, image: { src: fileUrl } } })
-          });
-          console.log("Collection image set:", title, "<=", fileUrl);
-        } else {
-          console.log("Collection image missing (no matching file):", title, "node_slug=", node.node_slug);
-        }
-      }
-    } catch (e) {
-      console.warn("Image assign failed for", title, e?.message || e);
-    }
-
-    ensured.push({
-      id: coll.id,
-      title,
-      node_slug: node.node_slug,
-      facets: node.facets,
-      level: i,
-      parentId: null, // to be filled next pass
-      childId: null
-    });
-  }
-  // link parents/children (linear branch)
-  for (let i = 0; i < ensured.length; i++) {
-    ensured[i].parentId = i > 0 ? ensured[i - 1].id : null;
-    ensured[i].childId = i < ensured.length - 1 ? ensured[i + 1].id : null;
-  }
-  await setCollectionTaxonomyFields(ensured);
-  await setCustomSubCollectionsForBranch(ensured);
-  return ensured;
-}
-
-// ==== Collections lookup (read-only) =========================================
-
-let __collectionsByTitle = new Map();
-let __collectionsLoaded = false;
-
-function normalizeTitleMatch(s) {
-  return normalizeForMatch(s); // využijeme tvoju helper funkciu
-}
-
-function tryLoadCollectionsMapFromFile() {
-  // 0) staticky natiahnutý JSON cez createRequire
-  try {
-    if (Array.isArray(collectionsMap) && collectionsMap.length) {
-      __collectionsByTitle.clear();
-      for (const rec of collectionsMap) {
-        if (!rec?.title || !rec?.id) continue;
-        __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
-      }
-      __collectionsLoaded = true;
-      console.log("Collections map loaded from static require with", __collectionsByTitle.size, "items");
-      return true;
-    }
-  } catch {}
-
-  // 1) ENV fallback (vložíš celý obsah JSON do Vercel ENV `COLLECTIONS_MAP_JSON`)
-  try {
-    const fromEnv = process.env.COLLECTIONS_MAP_JSON;
-    if (fromEnv) {
-      const arr = JSON.parse(fromEnv);
-      if (Array.isArray(arr)) {
-        __collectionsByTitle.clear();
-        for (const rec of arr) {
-          if (!rec?.title || !rec?.id) continue;
-          __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
-        }
-        __collectionsLoaded = true;
-        console.log("Collections map loaded from ENV with", __collectionsByTitle.size, "items");
-        return true;
-      }
-    }
-  } catch (e) {
-    console.warn("ENV COLLECTIONS_MAP_JSON parse failed:", e?.message || e);
-  }
-
-  // 2) FS fallback (lokálne aj vo Verceli – viac ciest)
-  try {
-    const candidates = [
-      path.join(process.cwd(), "collections-map.json"),           // root
-      path.join(process.cwd(), "api", "collections-map.json"),    // api/
-      // relativne k tomuto modulovému súboru (po bundli môže byť iná cesta)
-      path.join(path.dirname(new URL(import.meta.url).pathname), "collections-map.json")
-    ];
-
-    for (const fp of candidates) {
-      try {
-        const data = fs.readFileSync(fp, "utf8");
-        const arr = JSON.parse(data);
-        if (Array.isArray(arr)) {
-          __collectionsByTitle.clear();
-          for (const rec of arr) {
-            if (!rec?.title || !rec?.id) continue;
-            __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
-          }
-          __collectionsLoaded = true;
-          console.log("Collections map loaded from file:", fp, "items:", __collectionsByTitle.size);
-          return true;
-        }
-      } catch {}
-    }
-  } catch (e) {
-    console.warn("Collections map file not loaded:", e?.message || e);
-  }
-
-  return false;
-}
-
-async function ensureCollectionsCache() {
-  if (__collectionsLoaded) return;
-  if (!tryLoadCollectionsMapFromFile()) {
-    throw new Error("collections-map.json not available; this webhook runs in LOOKUP-ONLY mode and requires it.");
-  }
-}
-
-async function resolveCollectionIdByTitle(title) {
-  await ensureCollectionsCache();
-  return __collectionsByTitle.get(normalizeTitleMatch(title)) || null;
-}
-
-// Z taxonómie zoberieme vetvu (root -> ... -> leaf) a pre každý NÁZOV nájdeme existujúce ID v mape
-async function resolveExistingBranchIdsBySlug(brandName, nodeSlug) {
-  const branchNodes = getBranchBySlug(brandName, nodeSlug); // [root,...,leaf] z taxonomie
-  if (!branchNodes.length) return [];
-  const out = [];
-  for (const n of branchNodes) {
-    const title = n.name || n.title;
-    const cid = await resolveCollectionIdByTitle(title);
-    if (!cid) {
-      console.warn("Collection TITLE not found in collections-map.json:", title);
-      continue; // pripneme aspoň to, čo existuje
-    }
-    out.push({ id: cid, title });
-  }
-  return out; // v poradí od root po leaf
-}
 
 export default async function handler(req, res) {
   try {
@@ -1279,35 +991,47 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) Collections (LOOKUP ONLY: attach leaf + parents, nič nevytvárame/neupravujeme)
-    if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
-      const productNumericId = body.id;
-
-      if (!ENABLE_COLLECTIONS_ATTACH) {
-        console.warn("Collections attach disabled by flag");
-      } else {
+    // --- 3) Collections (attach using existing map only; never create/modify collections)
+    if (COLLECTIONS_STRATEGY !== "off") {
+      if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
+        const productNumericId = body.id;
         for (const slug of slugPicks) {
-          const branch = await resolveExistingBranchIdsBySlug(detectedBrand, slug); // [{id,title}] root->leaf
-          if (!branch.length) {
-            console.warn("No existing collections resolved for", detectedBrand, slug);
+          const branchNodes = getBranchBySlug(detectedBrand, slug);
+          console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name || n.title));
+          if (!branchNodes.length) {
+            console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
             continue;
           }
-          for (const node of branch) {
-            if (DRY_RUN) {
-              console.log("[DRY_RUN] Would attach product", productNumericId, "->", node.title, `(#${node.id})`);
-            } else {
-              try {
-                const exists = await restCollectExists(productNumericId, node.id);
-                if (!exists) await restCreateCollect(productNumericId, node.id);
-              } catch (e) {
-                console.warn("Attach failed", node, e?.message || e);
+          const collectionIds = resolveCollectionIdsFromBranch(branchNodes);
+          if (!collectionIds.length) {
+            console.warn("No matching collection IDs from map for branch:", branchNodes.map(n => n.name || n.title));
+            continue;
+          }
+          console.log("Resolved collection IDs:", collectionIds);
+
+          for (const cid of collectionIds) {
+            if (DRY_RUN_COLLECTIONS) {
+              console.log(`[DRY-RUN] Would attach product ${productNumericId} -> collection ${cid}`);
+              continue;
+            }
+            try {
+              const exists = await restCollectExists(productNumericId, cid);
+              if (!exists) {
+                await restCreateCollect(productNumericId, cid);
+                console.log("Attached product", productNumericId, "to collection", cid);
+              } else {
+                console.log("Collect already exists (skipping):", productNumericId, "->", cid);
               }
+            } catch (e) {
+              console.warn("Collect attach failed:", productNumericId, "->", cid, e?.message || e);
             }
           }
         }
+      } else {
+        console.warn("Collections: no slug picks or no brand -> skipping taxonomy attach");
       }
     } else {
-      console.warn("Collections: no slug picks or no brand -> skipping");
+      console.log("Collections strategy is OFF: skipping all collection attaches.");
     }
 
     // --- 4) anti-loop
