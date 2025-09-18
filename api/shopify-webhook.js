@@ -13,9 +13,10 @@ import { createRequire } from "module";
 let collectionsMap = null;
 try {
   const require = createRequire(import.meta.url);
-  collectionsMap = require("../collections-map.json"); // súbor musí byť o level vyššie ako api/
+  collectionsMap = require("./collections-map.json"); // <- zmena na ./  (rovnaký priečinok)
+  console.log("collectionsMap loaded via static require (api/)");
 } catch (e) {
-  // nič – fallbacky nižšie
+  console.warn("static require collections-map.json failed:", e?.message);
 }
 // ==== Feature flags (env) ====
 const ENABLE_COLLECTIONS_ATTACH = (process.env.ENABLE_COLLECTIONS_ATTACH || "true") === "true";
