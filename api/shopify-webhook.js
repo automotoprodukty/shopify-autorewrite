@@ -9,6 +9,9 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+// ==== Feature flags (env) ====
+const ENABLE_COLLECTIONS_ATTACH = (process.env.ENABLE_COLLECTIONS_ATTACH || "true") === "true";
+const DRY_RUN = (process.env.DRY_RUN || "true") === "true"; // odporúčam nechať najprv true
 // --- Load taxonomy.json at startup and keep in memory
 let taxonomia = null;
 function loadTaxonomia() {
@@ -907,6 +910,65 @@ async function ensureBranchAndTaxonomy(branchNodes) {
   return ensured;
 }
 
+// ==== Collections lookup (read-only) =========================================
+
+let __collectionsByTitle = new Map();
+let __collectionsLoaded = false;
+
+function normalizeTitleMatch(s) {
+  return normalizeForMatch(s); // využijeme tvoju helper funkciu
+}
+
+function tryLoadCollectionsMapFromFile() {
+  try {
+    const file = path.join(process.cwd(), "collections-map.json");
+    const data = fs.readFileSync(file, "utf8");
+    const arr = JSON.parse(data);
+    if (Array.isArray(arr)) {
+      __collectionsByTitle.clear();
+      for (const rec of arr) {
+        if (!rec?.title || !rec?.id) continue;
+        __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+      }
+      __collectionsLoaded = true;
+      console.log("Collections map loaded from file with", __collectionsByTitle.size, "items");
+      return true;
+    }
+  } catch (e) {
+    console.warn("Collections map file not loaded:", e?.message || e);
+  }
+  return false;
+}
+
+async function ensureCollectionsCache() {
+  if (__collectionsLoaded) return;
+  if (!tryLoadCollectionsMapFromFile()) {
+    throw new Error("collections-map.json not available; this webhook runs in LOOKUP-ONLY mode and requires it.");
+  }
+}
+
+async function resolveCollectionIdByTitle(title) {
+  await ensureCollectionsCache();
+  return __collectionsByTitle.get(normalizeTitleMatch(title)) || null;
+}
+
+// Z taxonómie zoberieme vetvu (root -> ... -> leaf) a pre každý NÁZOV nájdeme existujúce ID v mape
+async function resolveExistingBranchIdsBySlug(brandName, nodeSlug) {
+  const branchNodes = getBranchBySlug(brandName, nodeSlug); // [root,...,leaf] z taxonomie
+  if (!branchNodes.length) return [];
+  const out = [];
+  for (const n of branchNodes) {
+    const title = n.name || n.title;
+    const cid = await resolveCollectionIdByTitle(title);
+    if (!cid) {
+      console.warn("Collection TITLE not found in collections-map.json:", title);
+      continue; // pripneme aspoň to, čo existuje
+    }
+    out.push({ id: cid, title });
+  }
+  return out; // v poradí od root po leaf
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).send("Method not allowed");
@@ -1162,24 +1224,35 @@ CIEĽ: Vráť JSON s kľúčmi:
         }
       }
 
-    // --- 3) Collections (STRICT taxonomy via slug picks only)
+    // --- 3) Collections (LOOKUP ONLY: attach leaf + parents, nič nevytvárame/neupravujeme)
     if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
       const productNumericId = body.id;
-      for (const slug of slugPicks) {
-        const branchNodes = getBranchBySlug(detectedBrand, slug);
-        console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name));
-        if (!branchNodes.length) {
-          console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
-          continue;
-        }
-        const ensured = await ensureBranchAndTaxonomy(branchNodes);
-        console.log("ENSURE BRANCH OK =>", ensured.map(x => `${x.title}#${x.id}`));
-        for (const n of ensured) {
-          await restCreateCollect(productNumericId, n.id); // attach to leaf + all parents
+
+      if (!ENABLE_COLLECTIONS_ATTACH) {
+        console.warn("Collections attach disabled by flag");
+      } else {
+        for (const slug of slugPicks) {
+          const branch = await resolveExistingBranchIdsBySlug(detectedBrand, slug); // [{id,title}] root->leaf
+          if (!branch.length) {
+            console.warn("No existing collections resolved for", detectedBrand, slug);
+            continue;
+          }
+          for (const node of branch) {
+            if (DRY_RUN) {
+              console.log("[DRY_RUN] Would attach product", productNumericId, "->", node.title, `(#${node.id})`);
+            } else {
+              try {
+                const exists = await restCollectExists(productNumericId, node.id);
+                if (!exists) await restCreateCollect(productNumericId, node.id);
+              } catch (e) {
+                console.warn("Attach failed", node, e?.message || e);
+              }
+            }
+          }
         }
       }
     } else {
-      console.warn("Collections: no slug picks -> skipping taxonomy attach");
+      console.warn("Collections: no slug picks or no brand -> skipping");
     }
 
     // --- 4) anti-loop
