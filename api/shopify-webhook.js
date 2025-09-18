@@ -1,4 +1,4 @@
-// Serverless endpoint pre Shopify webhook (Vercel).
+// Serverless endpoint pre Shopify webhook (Vercel)
 // 1) Overí HMAC podpis
 // 2) Dotiahne produkt z Admin GraphQL
 // 3) Zavolá OpenAI (JSON výstup)
