@@ -1,4 +1,4 @@
-// Serverless endpoint pre Shopify webhook (Vercel)
+// Serverless endpoint pre Shopify webhook (Vercel).
 // 1) Overí HMAC podpis
 // 2) Dotiahne produkt z Admin GraphQL
 // 3) Zavolá OpenAI (JSON výstup)
@@ -6,6 +6,7 @@
 // 5) Preloží hodnoty vo variantoch podľa nového zoznamu (mapovanie podľa indexu)
 // 6) Zapíše metafield automation.processed=true
 
+import collectionsMap from "../collections-map.json" assert { type: "json" };
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -920,6 +921,39 @@ function normalizeTitleMatch(s) {
 }
 
 function tryLoadCollectionsMapFromFile() {
+  // 0) staticky importovaný balík (najistejšie na Verceli)
+  if (Array.isArray(collectionsMap) && collectionsMap.length) {
+    __collectionsByTitle.clear();
+    for (const rec of collectionsMap) {
+      if (!rec?.title || !rec?.id) continue;
+      __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+    }
+    __collectionsLoaded = true;
+    console.log("Collections map loaded from static import with", __collectionsByTitle.size, "items");
+    return true;
+  }
+
+  // 1) ENV fallback
+  try {
+    const fromEnv = process.env.COLLECTIONS_MAP_JSON;
+    if (fromEnv) {
+      const arr = JSON.parse(fromEnv);
+      if (Array.isArray(arr)) {
+        __collectionsByTitle.clear();
+        for (const rec of arr) {
+          if (!rec?.title || !rec?.id) continue;
+          __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+        }
+        __collectionsLoaded = true;
+        console.log("Collections map loaded from ENV with", __collectionsByTitle.size, "items");
+        return true;
+      }
+    }
+  } catch (e) {
+    console.warn("ENV COLLECTIONS_MAP_JSON parse failed:", e?.message || e);
+  }
+
+  // 2) FS fallback (ak bežíš lokálne)
   try {
     const file = path.join(process.cwd(), "collections-map.json");
     const data = fs.readFileSync(file, "utf8");
@@ -937,6 +971,7 @@ function tryLoadCollectionsMapFromFile() {
   } catch (e) {
     console.warn("Collections map file not loaded:", e?.message || e);
   }
+
   return false;
 }
 
