@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/*.js": {
+      "includeFiles": [
+        "api/collections-map.json",
+        "taxonomia.json"
+      ]
+    }
+  }
+}
