@@ -963,20 +963,30 @@ function tryLoadCollectionsMapFromFile() {
     console.warn("ENV COLLECTIONS_MAP_JSON parse failed:", e?.message || e);
   }
 
-  // 2) FS fallback (lokálne spúšťanie)
+  // 2) FS fallback (lokálne aj vo Verceli – viac ciest)
   try {
-    const file = path.join(process.cwd(), "collections-map.json");
-    const data = fs.readFileSync(file, "utf8");
-    const arr = JSON.parse(data);
-    if (Array.isArray(arr)) {
-      __collectionsByTitle.clear();
-      for (const rec of arr) {
-        if (!rec?.title || !rec?.id) continue;
-        __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
-      }
-      __collectionsLoaded = true;
-      console.log("Collections map loaded from file with", __collectionsByTitle.size, "items");
-      return true;
+    const candidates = [
+      path.join(process.cwd(), "collections-map.json"),           // root
+      path.join(process.cwd(), "api", "collections-map.json"),    // api/
+      // relativne k tomuto modulovému súboru (po bundli môže byť iná cesta)
+      path.join(path.dirname(new URL(import.meta.url).pathname), "collections-map.json")
+    ];
+
+    for (const fp of candidates) {
+      try {
+        const data = fs.readFileSync(fp, "utf8");
+        const arr = JSON.parse(data);
+        if (Array.isArray(arr)) {
+          __collectionsByTitle.clear();
+          for (const rec of arr) {
+            if (!rec?.title || !rec?.id) continue;
+            __collectionsByTitle.set(normalizeTitleMatch(rec.title), Number(rec.id));
+          }
+          __collectionsLoaded = true;
+          console.log("Collections map loaded from file:", fp, "items:", __collectionsByTitle.size);
+          return true;
+        }
+      } catch {}
     }
   } catch (e) {
     console.warn("Collections map file not loaded:", e?.message || e);
