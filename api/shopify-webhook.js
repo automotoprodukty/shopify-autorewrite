@@ -66,7 +66,8 @@ function resolveCollectionIdsFromBranch(branchNodes) {
   return Array.from(new Set(ids));
 }
 const COLLECTIONS_STRATEGY = process.env.COLLECTIONS_STRATEGY || "existing_map"; // existing_map | off
-const DRY_RUN_COLLECTIONS = /^1|true$/i.test(String(process.env.DRY_RUN_COLLECTIONS || ""));
+
+const ATTACH_BRANCH = (process.env.ATTACH_BRANCH || "branch").toLowerCase(); // "branch" | "leaf"
 // --- Load taxonomy.json at startup and keep in memory
 let taxonomia = null;
 function loadTaxonomia() {
@@ -385,7 +386,7 @@ async function openAIRewrite(payloadText) {
       {
         role: "system",
         content:
-          "Si asistent pre úpravu Shopify produktov v slovenčine. Každý výstup musí byť 100 % slovensky (bez angličtiny, okrem skratiek typu LED, USB). Vráť iba čistý JSON podľa kľúčov: title (string), description (string), base_tags (array), subtags (array), extra_tags (array), collections (array), options (array objektov { name, position?, values? }). Nikdy nevymýšľaj parametre, ktoré nie sú vo vstupe. Pravidlá: 1) Názov: krátky, výstižný, bez emoji. Ak názov obsahuje variant/prídavné meno, uveď ho ZA pomlčkou: „Fólia na okno – priesvitná“. 2) Popis (vždy po slovensky) — presné formátovanie: • Krátky úvodný odsek (problém → riešenie). Po ňom prázdny riadok. • <strong>🚗 Výhody:</strong> (presne tento nadpis, bez medzery pod ním) body začínajú ✅, minimálne 4, žiadne <ul>. • prázdny riadok, potom <strong>📦 Špecifikácia:</strong> (presne tento nadpis) odrážky začínajú znakom •, len parametre zo vstupu; značku neuvádzaj, ak je NoEnName_Null. • prázdny riadok, potom <strong>🎯 Pre koho je určený:</strong> (presne tento nadpis) odrážky začínajú znakom •, minimálne 3. • Medzi nadpisom a prvou odrážkou NESMIE byť prázdny riadok; medzi poslednou odrážkou sekcie a ďalším nadpisom PRÁZDNÝ riadok BYŤ MUSÍ. 3) Tagy: • Základné tagy: buď konkrétna značka auta, alebo „Univerzálny“ + PRESNE jeden z: Interiér | Exteriér | Starostlivosť o auto | Vychytávky | Oblečenie | Doplnky. – Značky sa môžu kombinovať (napr. Audi, Mercedes). – Ak je produkt „Univerzálny“, musí mať len „Univerzálny“ + jeden z uvedených (nekombinovať medzi sebou). Správne: „Univerzálny“, „Interiér“. Nesprávne: „Univerzálny“, „Interiér“, „Exteriér“. • SubTagy: {Značka} {Interiér|Exteriér|Komponenty|Oblečenie}. Pre každú ZNAČKU len jeden typ. Nesprávne: „Audi Exteriér“, „Audi Oblečenie“. Správne: „Audi Exteriér“, „Peugeot Exteriér“. • Extra tagy: voľné kľúčové slová (modely, elektrika, osvetlenie…). 4) Kolekcie: • Určujú sa IBA zo Základných tagov a SubTagov. Každý ne-univerzálny produkt musí mať kolekciu základného tagu aj príslušného SubTagu (napr. Audi, Audi Exteriér). Univerzálne produkty majú kolekciu len podľa základného tagu (Interiér/Exteriér/Starostlivosť o auto/Vychytávky/Oblečenie/Doplnky). 5) Varianty/Options: • Ak je 1 option → premenuj na „Varianty“ a prelož všetky values do slovenčiny. • Ak sú 2+ options → prelož názvy optionov aj všetky values (napr. Color→Farba, pcs→ks, Black→čierna). Zachovaj mapovanie variantov index-to-index. Ak produkt obsahuje option values, vždy vráť kompletný preložený zoznam values pre každú option (napr. „pcs“ → „ks“, „Black“ → „čierna“). Ak je len 1 option, premenuj ju na „Varianty“ a prelož všetky values. 6) Anti-loop: metafield automation.processed = true. 7) Výstup: striktne po slovensky; žiadne anglické slová v názve/odrážkach; zachovaj presnú diakritiku a formát nadpisov a odrážok. Dodrž presné zalomenia riadkov: po úvodnom odseku vlož nový prázdny riadok; pred každým nadpisom vlož jeden prázdny riadok; po nadpise žiadny prázdny riadok; každá odrážka na novom riadku. Vráť len čistý JSON bez komentárov alebo dodatočného textu."
+          "Si asistent pre úpravu Shopify produktov v slovenčine. Každý výstup musí byť 100 % slovensky (bez angličtiny, okrem skratiek typu LED, USB). Vráť iba čistý JSON podľa kľúčov: title (string), description (string), base_tags (array), subtags (array), extra_tags (array), collections (array), options (array objektov { name, position?, values? }). Nikdy nevymýšľaj parametre, ktoré nie sú vo vstupe. Pravidlá: 1) Názov: krátky, výstižný, bez emoji. Ak názov obsahuje variant/prídavné meno, uveď ho ZA pomlčkou: „Fólia na okno – priesvitná“. 2) Popis (vždy po slovensky) — presné formátovanie: • Začína sekciou <strong>🚗 Výhody:</strong> (presne tento nadpis, bez medzery pod ním) body začínajú ✅, minimálne 4, žiadne <ul>. • prázdny riadok, potom <strong>📦 Špecifikácia:</strong> (presne tento nadpis) odrážky začínajú znakom •, len parametre zo vstupu; značku neuvádzaj, ak je NoEnName_Null. • prázdny riadok, potom <strong>🎯 Pre koho je určený:</strong> (presne tento nadpis) odrážky začínajú znakom •, minimálne 3. • Medzi nadpisom a prvou odrážkou NESMIE byť prázdny riadok; medzi poslednou odrážkou sekcie a ďalším nadpisom PRÁZDNÝ riadok BYŤ MUSÍ. 3) Tagy: • Základné tagy: buď konkrétna značka auta, alebo „Univerzálny“ + PRESNE jeden z: Interiér | Exteriér | Starostlivosť o auto | Vychytávky | Oblečenie | Doplnky. – Značky sa môžu kombinovať (napr. Audi, Mercedes). – Ak je produkt „Univerzálny“, musí mať len „Univerzálny“ + jeden z uvedených (nekombinovať medzi sebou). Správne: „Univerzálny“, „Interiér“. Nesprávne: „Univerzálny“, „Interiér“, „Exteriér“. • SubTagy: {Značka} {Interiér|Exteriér|Komponenty|Oblečenie}. Pre každú ZNAČKU len jeden typ. Nesprávne: „Audi Exteriér“, „Audi Oblečenie“. Správne: „Audi Exteriér“, „Peugeot Exteriér“. • Extra tagy: voľné kľúčové slová (modely, elektrika, osvetlenie…). 4) Kolekcie: • Určujú sa IBA zo Základných tagov a SubTagov. Každý ne-univerzálny produkt musí mať kolekciu základného tagu aj príslušného SubTagu (napr. Audi, Audi Exteriér). Univerzálne produkty majú kolekciu len podľa základného tagu (Interiér/Exteriér/Starostlivosť o auto/Vychytávky/Oblečenie/Doplnky). 5) Varianty/Options: • Ak je 1 option → premenuj na „Varianty“ a prelož všetky values do slovenčiny. • Ak sú 2+ options → prelož názvy optionov aj všetky values (napr. Color→Farba, pcs→ks, Black→čierna). Zachovaj mapovanie variantov index-to-index. Ak produkt obsahuje option values, vždy vráť kompletný preložený zoznam values pre každú option (napr. „pcs“ → „ks“, „Black“ → „čierna“). Ak je len 1 option, premenuj ju na „Varianty“ a prelož všetky values. 6) Anti-loop: metafield automation.processed = true. 7) Výstup: striktne po slovensky; žiadne anglické slová v názve/odrážkach; zachovaj presnú diakritiku a formát nadpisov a odrážok. Dodrž presné zalomenia riadkov: po úvodnom odseku vlož nový prázdny riadok; pred každým nadpisom vlož jeden prázdny riadok; po nadpise žiadny prázdny riadok; každá odrážka na novom riadku. Vráť len čistý JSON bez komentárov alebo dodatočného textu."
       },
       { role: "user", content: payloadText }
     ]
@@ -995,6 +996,7 @@ CIEĽ: Vráť JSON s kľúčmi:
     if (COLLECTIONS_STRATEGY !== "off") {
       if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
         const productNumericId = body.id;
+        const allCollectionIds = new Set();
         for (const slug of slugPicks) {
           const branchNodes = getBranchBySlug(detectedBrand, slug);
           console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name || n.title));
@@ -1002,29 +1004,31 @@ CIEĽ: Vráť JSON s kľúčmi:
             console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
             continue;
           }
-          const collectionIds = resolveCollectionIdsFromBranch(branchNodes);
+          let collectionIds = resolveCollectionIdsFromBranch(branchNodes);
+          if (ATTACH_BRANCH === "leaf" && collectionIds.length) {
+            collectionIds = [collectionIds[collectionIds.length - 1]]; // only the leaf
+          }
           if (!collectionIds.length) {
             console.warn("No matching collection IDs from map for branch:", branchNodes.map(n => n.name || n.title));
             continue;
           }
-          console.log("Resolved collection IDs:", collectionIds);
+          collectionIds.forEach(id => allCollectionIds.add(id));
+        }
 
-          for (const cid of collectionIds) {
-            if (DRY_RUN_COLLECTIONS) {
-              console.log(`[DRY-RUN] Would attach product ${productNumericId} -> collection ${cid}`);
-              continue;
+        const finalIds = Array.from(allCollectionIds);
+        console.log("Final unique collection IDs to attach:", finalIds);
+
+        for (const cid of finalIds) {
+          try {
+            const exists = await restCollectExists(productNumericId, cid);
+            if (!exists) {
+              await restCreateCollect(productNumericId, cid);
+              console.log("Attached product", productNumericId, "to collection", cid);
+            } else {
+              console.log("Collect already exists (skipping):", productNumericId, "->", cid);
             }
-            try {
-              const exists = await restCollectExists(productNumericId, cid);
-              if (!exists) {
-                await restCreateCollect(productNumericId, cid);
-                console.log("Attached product", productNumericId, "to collection", cid);
-              } else {
-                console.log("Collect already exists (skipping):", productNumericId, "->", cid);
-              }
-            } catch (e) {
-              console.warn("Collect attach failed:", productNumericId, "->", cid, e?.message || e);
-            }
+          } catch (e) {
+            console.warn("Collect attach failed:", productNumericId, "->", cid, e?.message || e);
           }
         }
       } else {
