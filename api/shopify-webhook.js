@@ -859,56 +859,8 @@ CIEĽ: Vráť JSON s kľúčmi:
       return cleaned; // give back whatever came (likely ["ine"]) so caller can decide
     }
 
-    // --- Slug-only classification (branch whitelist)
-    let slugPicks = [];
+    // --- Brand-only collection mode (no tree/slug logic)
     const detectedBrand = detectBrandFromProduct(p, out);
-    if (detectedBrand) {
-      // Try to infer preferred top-level subtree from AI collections like "AUDI Interiér", "AUDI Exteriér", etc.
-      let preferredArea = null; // e.g. "interier" | "exterier" | "komponenty" ...
-      if (Array.isArray(out?.collections)) {
-        const norm = (s)=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-        for (const c of out.collections) {
-          const s = norm(c);
-          // look for patterns "<brand> <area>"
-          if (s.includes(norm(detectedBrand))) {
-            const parts = s.split(" ");
-            const idx = parts.indexOf(norm(detectedBrand));
-            const next = parts[idx+1] || ""; // e.g. "interiér"
-            if (next) { preferredArea = next; break; }
-          }
-        }
-      }
-      let leaves;
-      if (preferredArea) {
-        const topNode = findBrandChildNode(detectedBrand, preferredArea);
-        leaves = topNode ? getLeavesUnderNode(topNode) : getBrandLeaves(detectedBrand);
-      } else {
-        leaves = getBrandLeaves(detectedBrand);
-      }
-      const allowed = leaves.map(x => ({ slug: x.node_slug, label: x.path ? x.path.join(" → ") : (x.name||x.title) }))
-                            .filter(x => x.slug);
-      try {
-        const cls = await aiPickCollectionSlugs({
-          title: p.title,
-          vendor: p.vendor,
-          tags: p.tags,
-          description: p.descriptionHtml,
-          allowedLeaves: allowed,
-          taxonomyTree: loadTaxonomia()
-        });
-        slugPicks = Array.isArray(cls?.collections_node_slugs) ? cls.collections_node_slugs.filter(Boolean) : [];
-        console.log("AI slug picks =>", slugPicks);
-        slugPicks = autoRefineSlugPicks(slugPicks, detectedBrand, p, leaves);
-        console.log("Slug picks after auto-refine =>", slugPicks);
-      } catch (e) {
-        console.warn("AI slug-pick failed:", e?.message || e);
-      }
-    } else {
-      console.warn("Brand not detected -> skipping slug-only classification");
-    }
-
-    // --- Guard: ak je produkt univerzálny alebo multi-brand, nespúšťaj značkové vetvy
-    // (removed fallback logic: rely only on slug picks)
 
     // --- 1) Update základných polí + názvy optionov
     const tags = [
@@ -994,45 +946,27 @@ CIEĽ: Vráť JSON s kľúčmi:
 
     // --- 3) Collections (attach using existing map only; never create/modify collections)
     if (COLLECTIONS_STRATEGY !== "off") {
-      if (Array.isArray(slugPicks) && slugPicks.length && detectedBrand) {
+      // Attach ONLY the brand collection (flat), ignore taxonomy/branches completely
+      if (detectedBrand) {
         const productNumericId = body.id;
-        const allCollectionIds = new Set();
-        for (const slug of slugPicks) {
-          const branchNodes = getBranchBySlug(detectedBrand, slug);
-          console.log("TAXO BRANCH (by slug) =>", detectedBrand, slug, "=>", branchNodes.map(n => n.name || n.title));
-          if (!branchNodes.length) {
-            console.warn("Slug not found in taxonomy branch:", detectedBrand, slug);
-            continue;
-          }
-          let collectionIds = resolveCollectionIdsFromBranch(branchNodes);
-          if (ATTACH_BRANCH === "leaf" && collectionIds.length) {
-            collectionIds = [collectionIds[collectionIds.length - 1]]; // only the leaf
-          }
-          if (!collectionIds.length) {
-            console.warn("No matching collection IDs from map for branch:", branchNodes.map(n => n.name || n.title));
-            continue;
-          }
-          collectionIds.forEach(id => allCollectionIds.add(id));
-        }
-
-        const finalIds = Array.from(allCollectionIds);
-        console.log("Final unique collection IDs to attach:", finalIds);
-
-        for (const cid of finalIds) {
+        const cid = findCollectionIdByTitle(detectedBrand);
+        if (!cid) {
+          console.warn("Collections map: missing brand title ->", detectedBrand);
+        } else {
           try {
             const exists = await restCollectExists(productNumericId, cid);
             if (!exists) {
               await restCreateCollect(productNumericId, cid);
-              console.log("Attached product", productNumericId, "to collection", cid);
+              console.log("Attached product", productNumericId, "to BRAND collection", cid, `(${detectedBrand})`);
             } else {
-              console.log("Collect already exists (skipping):", productNumericId, "->", cid);
+              console.log("Collect already exists (skipping):", productNumericId, "->", cid, `(${detectedBrand})`);
             }
           } catch (e) {
             console.warn("Collect attach failed:", productNumericId, "->", cid, e?.message || e);
           }
         }
       } else {
-        console.warn("Collections: no slug picks or no brand -> skipping taxonomy attach");
+        console.warn("Brand not detected -> skipping brand collection attach");
       }
     } else {
       console.log("Collections strategy is OFF: skipping all collection attaches.");
